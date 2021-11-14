@@ -1,0 +1,3 @@
+[submodule "fpga_samples"]
+	path = fpga_samples
+	url = git@github.com:ciniml/fpga_samples.git
