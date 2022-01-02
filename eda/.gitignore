@@ -1,0 +1,7 @@
+impl/gwsynthesis
+impl/pnr/*
+!impl/pnr/*.fs
+impl/temp
+*.gprj.user
+ip/*/*
+!ip/*/*.ipc
