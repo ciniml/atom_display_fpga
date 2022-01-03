@@ -1,13 +1,20 @@
-.PHONY: all clean synthesis run deploy
+.PHONY: all clean synthesis run deploy rle
 
 PROGRAMMER_CLI_DIR = $(dir $(shell which programmer_cli))
+PYTHON3 ?= python3
+SCRIPT_DIR ?= ../../script
 
-all: synthesis
+all: rle
 
 $(BITSTREAM): $(SRCS)
-	gw_sh ./project.tcl
+	gw_sh ./project.tcl $(TARGET_NAME)
+
+%.rle: %.fs
+	$(PYTHON3) $(SCRIPT_DIR)/fs2rle.py $< $@
 
 synthesis: $(BITSTREAM)
+
+rle: $(BITSTREAM:.fs=.rle)
 
 run: $(BITSTREAM)
 	if lsmod | grep ftdi_sio; then sudo modprobe -r ftdi_sio; fi

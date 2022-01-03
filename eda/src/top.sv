@@ -55,7 +55,6 @@ module top (
 
     logic clock;
     logic clock_video;
-    logic clock_osc;
     logic reset_n;
     logic reset_video;
     logic [2:0] reset_video_sync = '1;
@@ -88,10 +87,6 @@ module top (
             led <= !led;
         end
     end
-    
-    Gowin_OSC gowin_osc_i(
-        .oscout(clock_osc) //output oscout
-    );
 
     always_ff @(posedge clock) begin
         if( !lock_main ) begin
