@@ -5,9 +5,9 @@ M5AtomDisplay display(1280, 720);
 void setup(void)
 {
   display.init();
-  display.setRotation(0);
-  display.setColorDepth(24);  // 24bit per pixel color setting
-  //display.setColorDepth(16);  // 16bit per pixel color setting ( default )
+  display.setRotation(1);
+  //display.setColorDepth(24);  // 24bit per pixel color setting
+  display.setColorDepth(16);  // 16bit per pixel color setting ( default )
   //display.setColorDepth( 8);  //  8bit per pixel color setting
 
   display.startWrite();

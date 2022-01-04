@@ -11,6 +11,9 @@ all: $(BITSTREAM_RLE)
 	cat fs_bitstream.h >> $(BITSTREAM_HEADER)
 	platformio run -t upload
 
+$(BITSTREAM_RLE):
+	cd ../eda/$(TARGET); make
+
 clean:
 	-@$(RM) fs_bitstream.*
-	platformio clean
+	-@$(RM) -r .pio
