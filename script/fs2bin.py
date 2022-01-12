@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-# License: BSL-1.0
+# SPDX-License-Identifier: BSL-1.0
 # Author: Kenta Ida (fuga@fugafuga.org)
 
 import sys

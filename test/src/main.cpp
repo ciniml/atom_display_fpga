@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: CC0-1.0
+
 #include <M5AtomDisplay.h>
 M5AtomDisplay display(1280, 720);
 // M5AtomDisplay display(1920, 1080, 24);

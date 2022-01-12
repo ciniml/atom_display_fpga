@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: CC0-1.0
+
 set_option -output_base_name stop_watch
 set_device -name GW1N-4B GW1N-LV4LQ144C6/I5
 
