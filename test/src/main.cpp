@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: CC0-1.0
+// based on M5GFX ATOMDisplay sample code.
+// (approved to apply CC0 license by @lovyan03)
 
 #include <M5AtomDisplay.h>
 M5AtomDisplay display(1280, 720);
