@@ -68,6 +68,14 @@ Done elaborating.
 
 GOWIN EDAのGUIを起動し、IP Generatorから `eda/ip/SDRAM_controller_top_SIP/SDRAM_controller_top_SIP.ipc` および `eda/ip/sdram_rpll/sdram_rpll.ipc` を開き、立ち上がったウィザードでそのままOKを押す。
 
+![IP Menu](doc/gw_ide_menu.png)
+
+![Open IP Core](doc/gw_ide_open_ip_core.png)
+
+![Select IP Config](doc/gw_ide_select_ip_config.png)
+
+![IP Customization](doc/gw_ide_ip_custom.png)
+
 ### 論理合成
 
 `eda/atomdisplay` に移動して `make` を実行すると、GOWIN EDAを使って論理合成を行い、ビットストリームを生成する。
