@@ -6,6 +6,50 @@
 
 ATOM Displayに搭載されているFPGAはGOWIN社の `GW1NR-LV9QN88` であり、GOWIN社から提供される GOWIN EDA ツールを用いて論理合成、配置配線、ビットストリームの生成を行うことにより、付属のテストコードと結合して、生成したビットストリームを動かすことができる。
 
+## システム構成
+
+![ブロック図](doc/block.drawio.svg)
+
+## デザインのリソース使用量
+
+```
+----------------------------------------------------------
+Resources                   | Usage
+----------------------------------------------------------
+Logic                       | 4971/8640  57%
+  --LUT,ALU,ROM16           | 4785(3896 LUT, 889 ALU, 0 ROM16)
+  --SSRAM(RAM16)            | 31
+Register                    | 4081/6807  59%
+  --Logic Register as Latch | 0/6480  0%
+  --Logic Register as FF    | 4078/6480  62%
+  --I/O Register as Latch   | 0/327  0%
+  --I/O Register as FF      | 3/327  1%
+CLS                         | 3824/4320  88%
+I/O Port                    | 39
+I/O Buf                     | 38
+  --Input Buf               | 5
+  --Output Buf              | 33
+  --Inout Buf               | 0
+IOLOGIC                     | 47%
+  --IDDR                    | 16
+  --ODDR                    | 36
+BSRAM                       | 53%
+  --SDPB                    | 7
+  --SDPX9B                  | 7
+DSP                         | 5%
+  --MULT18X18               | 1
+PLL                         | 1/2  50%
+DCS                         | 0/8  0%
+DQCE                        | 0/24  0%
+OSC                         | 0/1  0%
+User Flash                  | 0/1  0%
+CLKDIV                      | 0/8  0%
+DLLDLY                      | 0/8  0%
+DHCEN                       | 0/8  0%
+DHCENC                      | 0/4  0%
+==========================================================
+```
+
 ## 必要なもの
 
 現在のところLinux環境上でのみ、リポジトリ内のビルドスクリプトの動作を確認している。
