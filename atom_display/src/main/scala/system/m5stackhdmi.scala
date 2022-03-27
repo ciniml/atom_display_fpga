@@ -163,7 +163,7 @@ class M5StackHDMI(defaultVideoParams: VideoParams = PresetVideoParams.Default_12
     val demux = Module(new AXI4Demux(readerParams, 2))
     
     // Gate frame buffer access from command processor stream reader/writer to ensure the read from frame buffer for video signal generator is not disturbed.
-    val enableFrameBufferAccess = !reader.io.active || RegNext(fifo.io.writeHalfFull, false.B)  // Enable frame buffer access if frame buffer reader is inactive and/or the FIFO has enough data.
+    val enableFrameBufferAccess = !reader.io.active || RegNext(!fifo.io.write.ready, false.B)  // Enable frame buffer access if frame buffer reader is inactive and/or the FIFO has enough data.
     demux.io.in(0) <> reader.io.mem
     demux.io.in(1) <> WithAXI4Gate(streamReader.io.axi, enableFrameBufferAccess)
     sdrc.io.axi <> WithAXI4RegSlice(AXIChannelCombine(demux.io.out, WithAXI4Gate(streamWriter.io.axi, enableFrameBufferAccess)))

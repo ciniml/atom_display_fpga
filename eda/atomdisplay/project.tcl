@@ -10,7 +10,7 @@ set_option -route_option 2
 
 set_option -use_jtag_as_gpio 1
 
-add_file -type verilog [file normalize ../../atom_display/rtl/m5stack_hdmi/video_generator.v]
+add_file -type verilog [file normalize ../../rtl/m5stack_hdmi/video_generator.v]
 add_file -type verilog [file normalize ../ip/SDRAM_controller_top_SIP/SDRAM_controller_top_SIP.v]
 add_file -type verilog [file normalize ../ip/sdram_rpll/sdram_rpll.v]
 add_file -type verilog [file normalize ../src/top.sv]
