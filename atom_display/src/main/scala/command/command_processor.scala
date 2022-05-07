@@ -125,10 +125,15 @@ class CommandProcessor(videoParams: VideoParams, defaultVideoParams: VideoParams
     pixelDataMux.io.in(2).ready <> pixelDataWidth8to24.io.deq.ready
     pixelDataMux.io.in(2).bits := pixelDataWidth8to24.io.deq.bits.body  // WidthConverter puts the bytes from LSB to MSB, so R,G,B,R,... bytes stream is already converted to BGR888 stream.
     //  Frame buffer reader -> index 3: BGR888
-    val queuedReadData = Queue(io.readerData, 2048)
-    pixelDataMux.io.in(3).valid <> queuedReadData.valid
-    pixelDataMux.io.in(3).ready <> queuedReadData.ready
-    pixelDataMux.io.in(3).bits := queuedReadData.bits.pixelData
+    val readerDataQueue = Module(new PacketQueue(Flushable(io.readerData.bits.pixelData), 2048))
+    readerDataQueue.io.write.valid := io.readerData.valid
+    io.readerData.ready := readerDataQueue.io.write.ready
+    readerDataQueue.io.write.bits.body := io.readerData.bits.pixelData
+    readerDataQueue.io.write.bits.last := io.readerData.bits.endOfLine
+
+    pixelDataMux.io.in(3).valid <> readerDataQueue.io.read.valid
+    pixelDataMux.io.in(3).ready <> readerDataQueue.io.read.ready
+    pixelDataMux.io.in(3).bits := readerDataQueue.io.read.bits.body
 
     // Command stream (index 0)
     val dataReg = WithIrrevocableRegSlice(spiDemux.io.out(0))
@@ -230,7 +235,10 @@ class CommandProcessor(videoParams: VideoParams, defaultVideoParams: VideoParams
         x >= videoParams.pixelsH.U || y >= videoParams.pixelsV.U
     }
     def checkRectError(xStart: UInt, xEnd: UInt, yStart: UInt, yEnd: UInt): Bool = {
-        xStart > xEnd || xStart >= videoParams.pixelsH.U || xEnd >= videoParams.pixelsH.U || yStart > yEnd || yStart >= videoParams.pixelsV.U || yEnd >= videoParams.pixelsV.U
+        xStart > xEnd || yStart > yEnd || checkRectRangeError(xStart, xEnd, yStart, yEnd)
+    }
+    def checkRectRangeError(xStart: UInt, xEnd: UInt, yStart: UInt, yEnd: UInt): Bool = {
+        xStart >= videoParams.pixelsH.U || xEnd >= videoParams.pixelsH.U || yStart >= videoParams.pixelsV.U || yEnd >= videoParams.pixelsV.U
     }
     val coordStart = WireDefault( (params(0) << 8) | params(1) )
     val coordEnd = WireDefault( (params(2) << 8) | params(3) )
@@ -242,12 +250,13 @@ class CommandProcessor(videoParams: VideoParams, defaultVideoParams: VideoParams
     val fillColorRGB332 = WireDefault(  params(8) )
     val fillColorRGB565 = WireDefault( (params(8) << 8) | params(9) )
     val fillColorRGB888 = WireDefault( (params(8) << 16) | (params(9) << 8) | params(10) )
+    val rectRangeError = RegNext(checkRectRangeError(xStart, xEnd, yStart, yEnd))
     val rectError = RegNext(checkRectError(xStart, xEnd, yStart, yEnd))
     val xDestStart = WireDefault( (params(8) << 8) | params(9) )
     val yDestStart = WireDefault( (params(10) << 8) | params(11) )
     val xDestEnd = RegNext(xDestStart + xEnd - xStart)
     val yDestEnd = RegNext(yDestStart + yEnd - yStart)
-    val destError = RegNext(checkRectError(xDestStart, xDestEnd, yDestStart, yDestEnd))
+    val destRangeError = RegNext(checkRectRangeError(xDestStart, xDestEnd, yDestStart, yDestEnd))
 
     val coordError = RegNext(checkCoordError(xStart, yStart))
     val pixelFillColorRGB332 = WireDefault(  params(4) )
@@ -407,7 +416,7 @@ class CommandProcessor(videoParams: VideoParams, defaultVideoParams: VideoParams
             val commandType = WireDefault(toCommandType(command))
             val commandNumber = WireDefault(toCommandNumber(command))
             when(command === Commands.CopyRect.U ) {    // COPYRECT
-                when( rectError || destError )  {
+                when( rectRangeError || destRangeError )  {
                     state := State.sIdle
                     skipToFirst := true.B
                 } .otherwise {
