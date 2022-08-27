@@ -78,7 +78,7 @@ module top (
     logic O_sdrc_rd_valid;
     logic O_sdrc_wrd_ack;
 
-    logic clock;
+    logic clock; /* synthesis syn_keep=1 */
     logic clock_video;
     logic reset_n;
     logic reset_video;
@@ -142,8 +142,22 @@ module top (
         .clkin(CLK_IN_50M) //input clkin
     );
 
-    wire [23:0] video_data;
-    assign RGB_OUT = video_data; //{video_data[15:11], 3'b0, video_data[10:5], 2'b0, video_data[4:0], 3'b0};
+    logic [23:0] video_data;
+    assign RGB_OUT[13:0] = video_data[13:0]; 
+    assign RGB_OUT[18] = video_data[14];
+    assign RGB_OUT[23] = video_data[15];
+    assign RGB_OUT[17] = video_data[16];
+    assign RGB_OUT[22] = video_data[17];
+    assign RGB_OUT[16] = video_data[18];
+    assign RGB_OUT[21] = video_data[19];
+    assign RGB_OUT[15] = video_data[20];
+    assign RGB_OUT[20] = video_data[21];
+    assign RGB_OUT[14] = video_data[22];
+    assign RGB_OUT[19] = video_data[23];
+
+    logic video_hsync, video_vsync;
+    assign RGB_HSYNC = video_vsync;
+    assign RGB_VSYNC = video_hsync;
 
     M5StackHDMI video_generator_i (
         .reset(!reset_n),
@@ -151,8 +165,8 @@ module top (
         .io_videoClock(clock_video),
         .io_videoReset(reset_video),
         .io_video_pixelData(video_data),
-        .io_video_hSync(RGB_HSYNC),
-        .io_video_vSync(RGB_VSYNC),
+        .io_video_hSync(video_hsync),
+        .io_video_vSync(video_vsync),
         .io_video_dataEnable(data_enable),
         .io_dataInSync(data_in_sync),
         .io_sdrc_selfRefresh(I_sdrc_selfrefresh),

@@ -13,6 +13,10 @@ all: $(BITSTREAM_RLE)
 	cat fs_bitstream.h >> $(BITSTREAM_HEADER)
 	platformio run -t upload
 
+monitor:
+	miniterm /dev/ttyUSB0 115200 --raw
+
+
 $(BITSTREAM_RLE):
 	cd ../eda/$(TARGET); make
 
