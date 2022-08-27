@@ -39,7 +39,6 @@ module top (
     output wire HDMI_LED_B,
     output wire HDMI_LED_W,
     output wire SYS_LED_B,
-    output wire SYS_LED_R,
 
     // MCU Interface (SPI)
     output wire BUS_SPI_MISO,
@@ -58,7 +57,24 @@ module top (
     output wire [1:0] O_sdram_dqm,
     output wire [11:0] O_sdram_addr,
     output wire [1:0] O_sdram_ba,
-    inout  wire [15:0] IO_sdram_dq
+    inout  wire [15:0] IO_sdram_dq,
+
+    // I2S
+    output logic I2S_I_SCK,
+    output logic I2S_I_WS,
+    output logic I2S_I_SDO,
+    output logic I2S_I_MCLK,
+
+    // Other signals
+    input wire F_G12,
+    input wire F_G5,
+    input wire F_G15,
+    input wire F_G0,    // pull-up, to determine AtomDisplay/M5Display L=M5
+    input wire F_G2,
+    input wire F_G16,
+    input wire F_G17,
+    input wire F_G25,
+    input wire F_G26
 );
     // SDRAM Controller signals
     logic I_sdrc_rst_n;
@@ -78,7 +94,7 @@ module top (
     logic O_sdrc_rd_valid;
     logic O_sdrc_wrd_ack;
 
-    logic clock;
+    logic clock; /* synthesis syn_keep=1 */
     logic clock_video;
     logic reset_n;
     logic reset_video;
@@ -98,7 +114,6 @@ module top (
     assign HDMI_LED_W = processor_is_busy;
     //assign LED[2] = led; //I_sdrc_rst_n;
     assign SYS_LED_B = data_in_sync; //!O_sdrc_busy_n;
-    assign SYS_LED_R = BUS_SPI_CS;
 
     assign RGB_IDCK = clock_video;
     logic [31:0] reset_reg = '1;
@@ -142,8 +157,42 @@ module top (
         .clkin(CLK_IN_50M) //input clkin
     );
 
-    wire [23:0] video_data;
-    assign RGB_OUT = video_data; //{video_data[15:11], 3'b0, video_data[10:5], 2'b0, video_data[4:0], 3'b0};
+    // I2S connection
+    assign I2S_I_MCLK = clock_video;
+    assign I2S_I_SCK = F_G12;
+    assign I2S_I_SDO = F_G15;
+    assign I2S_I_WS  = F_G0;
+
+    logic is_m5display = 0;
+    logic is_m5display_lock = 0;
+    always_ff @(posedge clock_video) begin
+        if( reset_video ) begin
+            is_m5display <= 0;
+            is_m5display_lock <= 0;
+        end
+        else begin
+            is_m5display <= is_m5display_lock ? is_m5display : !F_G0;
+            is_m5display_lock <= 1;
+        end
+    end
+
+    // Swap pins for M5Display
+    logic [23:0] video_data;
+    assign RGB_OUT[13:0] = video_data[13:0]; 
+    assign RGB_OUT[18] = is_m5display ? video_data[14] : video_data[18];
+    assign RGB_OUT[23] = is_m5display ? video_data[15] : video_data[23];
+    assign RGB_OUT[17] = is_m5display ? video_data[16] : video_data[17];
+    assign RGB_OUT[22] = is_m5display ? video_data[17] : video_data[22];
+    assign RGB_OUT[16] = is_m5display ? video_data[18] : video_data[16];
+    assign RGB_OUT[21] = is_m5display ? video_data[19] : video_data[21];
+    assign RGB_OUT[15] = is_m5display ? video_data[20] : video_data[15];
+    assign RGB_OUT[20] = is_m5display ? video_data[21] : video_data[20];
+    assign RGB_OUT[14] = is_m5display ? video_data[22] : video_data[14];
+    assign RGB_OUT[19] = is_m5display ? video_data[23] : video_data[19];
+
+    logic video_hsync, video_vsync;
+    assign RGB_HSYNC = is_m5display ? video_vsync : video_hsync;
+    assign RGB_VSYNC = is_m5display ? video_hsync : video_vsync;
 
     M5StackHDMI video_generator_i (
         .reset(!reset_n),
@@ -151,8 +200,8 @@ module top (
         .io_videoClock(clock_video),
         .io_videoReset(reset_video),
         .io_video_pixelData(video_data),
-        .io_video_hSync(RGB_HSYNC),
-        .io_video_vSync(RGB_VSYNC),
+        .io_video_hSync(video_hsync),
+        .io_video_vSync(video_vsync),
         .io_video_dataEnable(data_enable),
         .io_dataInSync(data_in_sync),
         .io_sdrc_selfRefresh(I_sdrc_selfrefresh),

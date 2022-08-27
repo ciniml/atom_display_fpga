@@ -9,6 +9,8 @@ set_option -place_option 1
 set_option -route_option 2
 
 set_option -use_jtag_as_gpio 1
+set_option -use_sspi_as_gpio 1
+set_option -use_mspi_as_gpio 1
 
 add_file -type verilog [file normalize ../../rtl/m5stack_hdmi/video_generator.v]
 add_file -type verilog [file normalize ../ip/SDRAM_controller_top_SIP/SDRAM_controller_top_SIP.v]

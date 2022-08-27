@@ -2,12 +2,16 @@
 // based on M5GFX ATOMDisplay sample code.
 // (approved to apply CC0 license by @lovyan03)
 
-#include <M5AtomDisplay.h>
+//#include <M5AtomDisplay.h>
+#include <M5Display.h>
 M5AtomDisplay display(1280, 720);
 // M5AtomDisplay display(1920, 1080, 24);
 
 void setup(void)
 {
+  pinMode(0, OUTPUT);
+  digitalWrite(0, 0);
+  
   display.init();
   display.setRotation(1);
   //display.setColorDepth(24);  // 24bit per pixel color setting
