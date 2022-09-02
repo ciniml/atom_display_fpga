@@ -38,10 +38,12 @@ module top (
     // Test LED
     output wire HDMI_LED_B,
     output wire HDMI_LED_W,
+    output wire HDMI_LED_B_ALT,
+    output wire HDMI_LED_W_ALT,
     output wire SYS_LED_B,
 
     // MCU Interface (SPI)
-    output wire BUS_SPI_MISO,
+    inout  wire BUS_SPI_MISO,
     input  wire BUS_SPI_MOSI,
     input  wire BUS_SPI_SCK,
     input  wire BUS_SPI_CS,
@@ -112,8 +114,9 @@ module top (
 
     assign HDMI_LED_B = led;
     assign HDMI_LED_W = processor_is_busy;
-    //assign LED[2] = led; //I_sdrc_rst_n;
-    assign SYS_LED_B = data_in_sync; //!O_sdrc_busy_n;
+    assign HDMI_LED_B_ALT = led;
+    assign HDMI_LED_W_ALT = processor_is_busy;
+    assign SYS_LED_B = data_in_sync;    /* only available in ATOM Display */
 
     assign RGB_IDCK = clock_video;
     logic [31:0] reset_reg = '1;
@@ -194,6 +197,14 @@ module top (
     assign RGB_HSYNC = is_m5display ? video_vsync : video_hsync;
     assign RGB_VSYNC = is_m5display ? video_hsync : video_vsync;
 
+    logic io_spi_miso;
+    IOBUF iobuf_spi_miso (
+        .O(),
+        .I(io_spi_miso),
+        .OEN(BUS_SPI_CS),
+        .IO(BUS_SPI_MISO)
+    );
+
     M5StackHDMI video_generator_i (
         .reset(!reset_n),
         .clock(clock),
@@ -218,7 +229,7 @@ module top (
         .io_sdrc_rdValid(O_sdrc_rd_valid),
         .io_sdrc_wrdAck(O_sdrc_wrd_ack),
         .io_trigger(trigger),
-        .io_spi_miso(BUS_SPI_MISO),
+        .io_spi_miso(io_spi_miso),
         .io_spi_mosi(BUS_SPI_MOSI),
         .io_spi_sck (BUS_SPI_SCK),
         .io_spi_cs  (BUS_SPI_CS),
