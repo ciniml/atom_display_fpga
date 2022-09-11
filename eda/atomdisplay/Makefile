@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: CC0-1.0
 
-TARGET_NAME ?= atomdisplay
-BITSTREAM := impl/pnr/$(TARGET_NAME).fs
-SRCS := $(wildcard ../src/*.cst) $(wildcard ../src/*.sdc) $(wildcard ../src/*.sv) ../../rtl/m5stack_hdmi/video_generator.v ../src/$(TARGET_NAME).cst project.tcl
-DEVICE ?= GW1NR-9C
+PROJECT_NAME := atomdisplay
+TARGET := atomdisplay
 
 include ../build_gowin.mk
+
+SRCS := $(wildcard src/*.cst) $(wildcard src/*.sdc) $(wildcard src/*.sv) $(RTL_DIR)/m5stack_hdmi/video_generator.v src/$(TARGET_NAME).cst project.tcl

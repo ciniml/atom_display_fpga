@@ -38,9 +38,13 @@ import _root_.util._
 
 import java.io.FileInputStream
 import scala.collection.mutable
+import spi.SPISlave
+import spi.SPIData
+import spi.SPIIO
 
 object PresetVideoParams {
   val Default_1280_720_60 = new VideoParams(24, 20, 720, 5, 5, 220, 1280, 110, 40)
+  val Default_1920_1080_30 = new VideoParams(24, 36, 1080, 4, 5, 148, 1920, 88, 44)
   val Generic_1024_768_60 = new VideoParams(24, 63, 768, 64, 5, 117, 1024, 117, 117)  // 351, 132
   val TwiHai_480_1920_60 = new VideoParams(24, 20, 1920, 10, 5, 51, 480, 51, 51)
   val Circular_480_480_60 = new VideoParams(24, 135, 480, 130, 5, 390, 480, 390, 390)

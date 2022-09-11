@@ -33,6 +33,7 @@ import sdram._
 import axi._
 import chisel3.experimental.BundleLiterals._
 import _root_.util._
+import spi.SPIData
 
 class CommandProcessor(videoParams: VideoParams, defaultVideoParams: VideoParams, axiParams: AXI4Params) extends Module {
     assert(videoParams.pixelBits == 24)

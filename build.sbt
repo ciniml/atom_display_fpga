@@ -20,7 +20,7 @@ lazy val commonSettings = Seq (
   addCompilerPlugin("org.scalamacros" % "paradise" % "2.1.1" cross CrossVersion.full)
 )
 
-lazy val fpga_samples = (project in file("./fpga_samples")).
+lazy val fpga_samples = (project in file("./fpga_samples/chisel")).
   settings(
     commonSettings,
     name := "fpga_samples"
