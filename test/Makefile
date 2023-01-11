@@ -18,7 +18,7 @@ monitor:
 
 
 $(BITSTREAM_RLE):
-	cd ../eda/$(TARGET); make
+	cd ../eda/$(TARGET); make rle
 
 clean:
 	-@$(RM) fs_bitstream.*

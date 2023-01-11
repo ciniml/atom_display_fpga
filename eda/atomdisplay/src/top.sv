@@ -86,7 +86,7 @@ module top (
     logic led = 0;
     logic data_in_sync;
     logic lock_main;
-    logic lock_video = 1;
+    logic lock_video;
     logic lock_sdram;
     logic trigger;
     logic processor_is_busy;
@@ -122,7 +122,7 @@ module top (
         end
     end
     assign reset_n = !reset_reg[0];
-    assign reset_video = reset_video_sync[0];
+    assign reset_video = reset_video_sync[0] && !lock_video;
     always_ff @(posedge clock_video) begin
         reset_video_sync[2] <= !reset_n;
         reset_video_sync[1:0] <= reset_video_sync[2:1];
@@ -131,6 +131,14 @@ module top (
     assign I_sdrc_clk = clock;
     assign I_sdrc_rst_n = reset_n && lock_sdram;
     assign clock_video = CLK_IN_74M25;
+
+     dvi_rpll dvi_rpll_i(
+        .clkout(clock_video),
+        //.clkoutp(clock),
+        //.clkoutd(clock_video),
+        .lock(lock_video),
+        .clkin(CLK_IN_74M25) //input clkin
+    );
 
     assign lock_main = lock_sdram;
     //assign lock_sdram = 1;
