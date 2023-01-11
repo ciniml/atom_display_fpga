@@ -6,4 +6,4 @@
 	url = git@github.com:m5stack/M5GFX.git
 [submodule "test/libraries/M5GFX"]
 	path = test/libraries/M5GFX
-	url = git@github.com:m5stack/M5GFX.git
+	url = https://github.com/m5stack/M5GFX.git
