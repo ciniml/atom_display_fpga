@@ -7,7 +7,7 @@
 # include <M5AtomDisplay.h>
 //# include <M5SPI2HDMI.h>
 #endif
-static M5AtomDisplay display(640, 480);
+static M5AtomDisplay display(640, 400);
 //static M5SPI2HDMI display(1280, 720);
 
 void setup(void)
@@ -42,9 +42,9 @@ void loop(void)
   // display.copyRect(320, 321, 128, 128, 320, 320); // 下にコピー
   // display.copyRect(63, 320, 128, 128, 64, 320); // 左にコピー
   int x = rand()%640;
-  int y = rand()%480;
+  int y = rand()%400;
   int w = rand()%640;
-  int h = rand()%480;
+  int h = rand()%400;
   int c = rand();
   display.fillRect(x, y, w, h, c);
   //delay(100);

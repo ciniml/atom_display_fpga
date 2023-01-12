@@ -80,7 +80,7 @@ module top (
 
     logic clock; /* synthesis syn_keep=1 */
     logic clock_video;
-    logic clock_video_x5;
+    //logic clock_video_x5;
     logic reset_n;
     logic reset_video;
     logic [2:0] reset_video_sync = '1;
@@ -134,18 +134,18 @@ module top (
     assign clock_video = CLK_IN_74M25;
 
     dvi_rpll dvi_rpll_i(
-        .clkout(clock_video_x5),
+        .clkout(clock_video),
         //.clkoutp(clock),
         //.clkoutd(clock_video),
         .lock(lock_video),
         .clkin(CLK_IN_74M25) //input clkin
     );
 
-    dvi_clkdiv dvi_clkdiv_i(
-        .clkout(clock_video), //output clkout
-        .hclkin(clock_video_x5), //input hclkin
-        .resetn(reset_n) //input resetn
-    );
+    // dvi_clkdiv dvi_clkdiv_i(
+    //     .clkout(clock_video), //output clkout
+    //     .hclkin(clock_video_x5), //input hclkin
+    //     .resetn(reset_n) //input resetn
+    // );
 
     assign lock_main = lock_sdram;
     //assign lock_sdram = 1;

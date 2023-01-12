@@ -21,7 +21,7 @@ add_file -type verilog [file normalize ${RTL_DIR}/m5stack_hdmi/video_generator.v
 add_file -type verilog [file normalize ${SRC_DIR}/ip/SDRAM_controller_top_SIP/SDRAM_controller_top_SIP.v]
 add_file -type verilog [file normalize ${SRC_DIR}/ip/sdram_rpll/sdram_rpll.v]
 add_file -type verilog [file normalize ${SRC_DIR}/ip/dvi_rpll/dvi_rpll.v]
-add_file -type verilog [file normalize ${SRC_DIR}/ip/dvi_clkdiv/dvi_clkdiv.v]
+#add_file -type verilog [file normalize ${SRC_DIR}/ip/dvi_clkdiv/dvi_clkdiv.v]
 add_file -type verilog [file normalize ${SRC_DIR}/top.sv]
 add_file -type cst [file normalize ${SRC_DIR}/${PROJECT_NAME}.cst]
 add_file -type sdc [file normalize ${SRC_DIR}/m5stack_display.sdc]

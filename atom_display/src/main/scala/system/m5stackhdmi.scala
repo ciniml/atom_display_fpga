@@ -50,11 +50,12 @@ object PresetVideoParams {
   val Circular_480_480_60 = new VideoParams(24, 135, 480, 130, 5, 390, 480, 390, 390)
   val LowPixelClock_640_480_60_CVT = new VideoParams(24, 13, 480, 3, 4, 80, 640, 16, 64)  // Pixel clock = 23.75, (actual clock is 23.625)
   val LowPixelClock_640_480_60_CEA_861 = new VideoParams(24, 33, 480, 10, 2, 48, 640, 16, 96)  // Pixel clock = 25.175, (actual clock is 25.18)
+  val LowPixelClock_ARGlass_640_400_59p94 = new VideoParams(24, 32, 400, 87, 6, 58, 640, 96, 64)  // 640x400 59.94Hz at Pixel clock = 27.000
   val Maximum = new VideoParams(24, 511, 2048, 511, 511, 511, 2048, 511, 511) // Max counter size
 }
 
 @chiselName
-class M5StackHDMI(defaultVideoParams: VideoParams = PresetVideoParams.LowPixelClock_640_480_60_CEA_861) extends Module {
+class M5StackHDMI(defaultVideoParams: VideoParams = PresetVideoParams.LowPixelClock_ARGlass_640_400_59p94) extends Module {
   val videoParams = PresetVideoParams.Maximum
   val videoConfigType = VideoConfig(videoParams)
   val fullPageBurstLength = 256 * 2 / 4 // 256 [columns/row] * 2 [bytes/column] / 4 [bytes/address] (full page burst)
