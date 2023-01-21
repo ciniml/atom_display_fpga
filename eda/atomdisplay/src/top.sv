@@ -84,6 +84,11 @@ module top (
     logic reset_n;
     logic reset_video;
     logic [2:0] reset_video_sync = '1;
+    logic dvi_rpll_reset;
+    logic [5:0] dvi_rpll_fbdsel;
+    logic [5:0] dvi_rpll_idsel;
+    logic [5:0] dvi_rpll_odsel;
+
     logic led = 0;
     logic data_in_sync;
     logic lock_main;
@@ -93,6 +98,12 @@ module top (
     logic processor_is_busy;
     logic [$clog2(74_250_000)-1:0] led_counter = 0;
     logic data_enable; /* synthesis syn_keep=true */
+
+    logic [15:0] video_clock_input_divider;
+    logic [15:0] video_clock_output_divider;
+    logic [15:0] video_clock_feedback_divider;
+    logic        video_clock_config_valid;
+
     assign RGB_DE = data_enable;
 
     assign HDMI_LED_B = led;
@@ -104,8 +115,8 @@ module top (
     assign RGB_IDCK = clock_video;
     logic [31:0] reset_reg = '1;
 
-    always_ff @(posedge CLK_IN_50M) begin
-        if( led_counter < 'd50_000_000 ) begin
+    always_ff @(posedge clock_video) begin
+        if( led_counter < 'd74_250_000 ) begin
             led_counter <= led_counter + 1;
         end
         else begin
@@ -138,7 +149,11 @@ module top (
         //.clkoutp(clock),
         //.clkoutd(clock_video),
         .lock(lock_video),
-        .clkin(CLK_IN_74M25) //input clkin
+        .reset(dvi_rpll_reset),
+        .clkin(CLK_IN_74M25), //input clkin
+        .fbdsel(dvi_rpll_fbdsel), //input [5:0] fbdsel
+        .idsel(dvi_rpll_idsel), //input [5:0] idsel
+        .odsel(dvi_rpll_odsel) //input [5:0] odsel
     );
 
     // dvi_clkdiv dvi_clkdiv_i(
@@ -156,6 +171,29 @@ module top (
         .lock(lock_sdram),
         .clkin(CLK_IN_50M) //input clkin
     );
+
+    // Video clock configuration sequence.
+    // assign dvi_rpll_reset = 0;
+    // assign dvi_rpll_fbdsel = 7'd64 - 7'd4;
+    // assign dvi_rpll_idsel = 7'd64 - 7'd4;
+    // assign dvi_rpll_odsel = 7'd64 - (7'd8 >> 1);
+    always_ff @(posedge clock) begin
+        if( !reset_n ) begin
+            dvi_rpll_reset <= 1;
+            dvi_rpll_fbdsel <= 7'd64 - 7'd4;
+            dvi_rpll_idsel <= 7'd64 - 7'd4;
+            dvi_rpll_odsel <= 7'd64 - (7'd8 >> 1);
+        end
+        else begin
+            dvi_rpll_reset <= video_clock_config_valid;
+            if( video_clock_config_valid ) begin
+                dvi_rpll_fbdsel <= 7'd64 - {1'b0, video_clock_feedback_divider[5:0]};
+                dvi_rpll_idsel <= 7'd64 - {1'b0, video_clock_input_divider[5:0]};
+                dvi_rpll_odsel <= 7'd64 - {2'b00, video_clock_output_divider[5:1]};
+            end
+        end
+    end
+     
 
     logic [23:0] video_data;
     assign RGB_OUT[13:0] = video_data[13:0]; 
@@ -203,6 +241,10 @@ module top (
         .io_spi_sck (BUS_SPI_SCK),
         .io_spi_cs  (BUS_SPI_CS),
         .io_processorIsBusy(processor_is_busy),
+        .io_videoClockConfig_inputDivider(video_clock_input_divider),
+        .io_videoClockConfig_outputDivider(video_clock_output_divider),
+        .io_videoClockConfig_feedbackDivider(video_clock_feedback_divider),
+        .io_videoClockConfigValid(video_clock_config_valid),
         .*
     );
 

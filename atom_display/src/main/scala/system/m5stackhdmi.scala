@@ -55,7 +55,7 @@ object PresetVideoParams {
 }
 
 @chiselName
-class M5StackHDMI(defaultVideoParams: VideoParams = PresetVideoParams.LowPixelClock_ARGlass_640_400_59p94) extends Module {
+class M5StackHDMI(defaultVideoParams: VideoParams = PresetVideoParams.Default_1280_720_60) extends Module {
   val videoParams = PresetVideoParams.Maximum
   val videoConfigType = VideoConfig(videoParams)
   val fullPageBurstLength = 256 * 2 / 4 // 256 [columns/row] * 2 [bytes/column] / 4 [bytes/address] (full page burst)
@@ -73,6 +73,8 @@ class M5StackHDMI(defaultVideoParams: VideoParams = PresetVideoParams.LowPixelCl
     val sdrc = new SDRCIO(sdramParams)
     val spi = Flipped(new SPIIO())
     val processorIsBusy = Output(Bool())
+    val videoClockConfig = Output(VideoClockConfig())
+    val videoClockConfigValid = Output(Bool())
   })
 
   //val tpg = Module(new TestPatternGenerator(params.pixelBits, params.pixelsH, params.pixelsV))
@@ -109,6 +111,10 @@ class M5StackHDMI(defaultVideoParams: VideoParams = PresetVideoParams.LowPixelCl
   // Video config
   val videoConfig = RegInit(videoConfigType.default(defaultVideoParams))
   val videoConfigValid = RegInit(false.B)
+
+  // Video clock config
+  val videoClockConfig = RegInit(VideoClockConfig.default())
+  val videoClockConfigValid = RegInit(false.B)
 
   // Test frame buffer writer
   if( useTestPattern ) {
@@ -198,8 +204,17 @@ class M5StackHDMI(defaultVideoParams: VideoParams = PresetVideoParams.LowPixelCl
     }
     val videoConfigValid_1 = RegNext(processor.io.videoConfig.valid, false.B)
     val videoConfigValid_2 = RegNext(videoConfigValid_1, false.B)
-    //videoConfigValid := videoConfigValid_2 | videoConfigValid_1 | processor.io.videoConfig.valid
+    videoConfigValid := videoConfigValid_2 | videoConfigValid_1 | processor.io.videoConfig.valid
+
+    // Update video clock config
+    when(!videoClockConfigValid && processor.io.videoClockConfig.valid) {
+      videoClockConfig := processor.io.videoClockConfig.bits
+    }
+    videoClockConfigValid := processor.io.videoClockConfig.valid
   }
+
+  io.videoClockConfig := videoClockConfig
+  io.videoClockConfigValid := videoClockConfigValid
 
   fifo.io.writeClock := clock
   fifo.io.writeReset := reset.asBool
