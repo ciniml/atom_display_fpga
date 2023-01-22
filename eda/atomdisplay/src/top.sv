@@ -47,7 +47,6 @@ module top (
     input  wire BUS_SPI_MOSI,
     input  wire BUS_SPI_SCK,
     input  wire BUS_SPI_CS,
-    input  wire BUS_BUSY,
     
     // Embedded SDRAM
     output wire O_sdram_clk,
@@ -60,6 +59,9 @@ module top (
     output wire [11:0] O_sdram_addr,
     output wire [1:0] O_sdram_ba,
     inout  wire [15:0] IO_sdram_dq,
+
+    // Module detection
+    input wire IS_MODULE_DISPLAY_N,
 
     // I2S
     output logic I2S_I_SCK,
@@ -160,7 +162,6 @@ module top (
 
     assign I_sdrc_clk = clock;
     assign I_sdrc_rst_n = reset_n && lock_sdram;
-    assign clock_video = CLK_IN_74M25;
 
     dvi_rpll dvi_rpll_i(
         .clkout(clock_video),
@@ -226,7 +227,7 @@ module top (
             is_m5display_lock <= 0;
         end
         else begin
-            is_m5display <= is_m5display_lock ? is_m5display : !F_G0;
+            is_m5display <= is_m5display_lock ? is_m5display : !F_G0;   // TODO: Replace !F_G0 to IS_MODULE_DISPLAY_N.
             is_m5display_lock <= 1;
         end
     end
