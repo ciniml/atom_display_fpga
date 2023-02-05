@@ -7,7 +7,7 @@
 # include <M5AtomDisplay.h>
 //# include <M5SPI2HDMI.h>
 #endif
-static M5AtomDisplay display(640, 400);
+static M5AtomDisplay display(1280, 720);
 //static M5SPI2HDMI display(1280, 720);
 
 void setup(void)
