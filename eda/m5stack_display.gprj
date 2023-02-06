@@ -5,11 +5,12 @@
     <Version>5</Version>
     <Device name="GW1NR-9C" pn="GW1NR-LV9QN88C6/I5">gw1nr9c-000</Device>
     <FileList>
-        <File path="../atom_display/rtl/m5stack_hdmi/video_generator.v" type="file.verilog" enable="1"/>
         <File path="ip/SDRAM_controller_top_SIP/SDRAM_controller_top_SIP.v" type="file.verilog" enable="1"/>
         <File path="ip/sdram_rpll/sdram_rpll.v" type="file.verilog" enable="1"/>
         <File path="src/top.sv" type="file.verilog" enable="1"/>
+        <File path="/home/kenta/repos/atom_display_fpga/rtl/m5stack_hdmi/video_generator.v" type="file.verilog" enable="1"/>
         <File path="src/spi2hdmi_jtag.cst" type="file.cst" enable="1"/>
         <File path="src/m5stack_display.sdc" type="file.sdc" enable="1"/>
+        <File path="src/m5stack_display.rao" type="file.gao" enable="1"/>
     </FileList>
 </Project>

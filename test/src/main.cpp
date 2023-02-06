@@ -1,47 +1,51 @@
-// SPDX-License-Identifier: CC0-1.0
-// based on M5GFX ATOMDisplay sample code.
-// (approved to apply CC0 license by @lovyan03)
 
-#include <M5AtomDisplay.h>
-M5AtomDisplay display(1280, 720);
-// M5AtomDisplay display(1920, 1080, 24);
+#if 0
+# define LGFX_USE_V1
+# include <LovyanGFX.hpp>
+# include <lgfx_user/M5AtomDisplay.hpp>
+#else
+# include <M5AtomDisplay.h>
+//# include <M5SPI2HDMI.h>
+#endif
+static M5AtomDisplay display(1280, 720);
+//static M5SPI2HDMI display(1280, 720);
 
 void setup(void)
 {
+  Serial.begin(115200);
+  Serial.println("Configure FPGA...");
+  //delay(10000);
+  Serial.println("Start...");
   display.init();
-  display.setRotation(1);
-  //display.setColorDepth(24);  // 24bit per pixel color setting
-  display.setColorDepth(16);  // 16bit per pixel color setting ( default )
-  //display.setColorDepth( 8);  //  8bit per pixel color setting
+  // for (int i = 0; i < 64; ++i)
+  // {
+  //   display.drawCircle(128, 128, i, rand());
+  //   display.drawCircle(384, 128, i, rand());
+  //   display.drawCircle(128, 384, i, rand());
+  //   display.drawCircle(384, 384, i, rand());
+  // }
 
-  display.startWrite();
-  for (int y = 0; y < display.height(); ++y)
-  {
-    for (int x = 0; x < display.width(); ++x)
-    {
-      display.writePixel(x, y, display.color888(x, x+y, y));
-    }
-  }
-  display.endWrite();
-
-  for (int i = 0; i < 16; ++i)
-  {
-    int x = rand() % display.width();
-    int y = rand() % display.height();
-    display.drawCircle(x, y, 16, rand());
-  }
+  // delay(2000);
+  // display.copyRect( 64, 0, 128, 128,  64, 64); // 上にコピー
+  // display.copyRect(384, 64, 128, 128, 320, 64); // 右にコピー
+  // display.copyRect(320, 384, 128, 128, 320, 320); // 下にコピー
+  // display.copyRect(0, 320, 128, 128, 64, 320); // 左にコピー
+  // delay(2000);
 }
 
+static uint32_t count = 0;
 void loop(void)
 {
-  display.startWrite();
-
-  static constexpr const char hello_str[] = "Hello ATOM Display !";
-  display.setFont(&fonts::Orbitron_Light_32);
-  for (int i = -display.textWidth(hello_str); i < display.width(); ++i)
-  {
-    display.drawString(hello_str, i, (display.height() - display.fontHeight()) >> 1);
-  }
-
-  display.endWrite();
+  Serial.println(count++);
+  // display.copyRect( 64, 63, 128, 128,  64, 64); // 上にコピー
+  // display.copyRect(321, 64, 128, 128, 320, 64); // 右にコピー
+  // display.copyRect(320, 321, 128, 128, 320, 320); // 下にコピー
+  // display.copyRect(63, 320, 128, 128, 64, 320); // 左にコピー
+  int x = rand()%640;
+  int y = rand()%400;
+  int w = rand()%640;
+  int h = rand()%400;
+  int c = rand();
+  display.fillRect(x, y, w, h, c);
+  //delay(100);
 }

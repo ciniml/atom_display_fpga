@@ -1,0 +1,4 @@
+build/*/impl/*
+!build/*/impl/pnr/
+build/*/impl/pnr/*
+!build/*/impl/pnr/*.fs

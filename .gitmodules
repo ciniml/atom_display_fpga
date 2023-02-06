@@ -1,9 +1,6 @@
 [submodule "fpga_samples"]
 	path = fpga_samples
-	url = git@github.com:ciniml/fpga_samples.git
-[submodule "test/M5GFX"]
-	path = test/M5GFX
-	url = git@github.com:m5stack/M5GFX.git
+	url = https://github.com/ciniml/fpga_samples.git
 [submodule "test/libraries/M5GFX"]
 	path = test/libraries/M5GFX
-	url = git@github.com:m5stack/M5GFX.git
+	url = https://github.com/ciniml/M5GFX.git

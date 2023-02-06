@@ -38,15 +38,15 @@ module top (
     // Test LED
     output wire HDMI_LED_B,
     output wire HDMI_LED_W,
+    output wire HDMI_LED_B_ALT,
+    output wire HDMI_LED_W_ALT,
     output wire SYS_LED_B,
-    output wire SYS_LED_R,
 
     // MCU Interface (SPI)
-    output wire BUS_SPI_MISO,
+    inout  wire BUS_SPI_MISO,
     input  wire BUS_SPI_MOSI,
     input  wire BUS_SPI_SCK,
     input  wire BUS_SPI_CS,
-    input  wire BUS_BUSY,
     
     // Embedded SDRAM
     output wire O_sdram_clk,
@@ -58,7 +58,27 @@ module top (
     output wire [1:0] O_sdram_dqm,
     output wire [11:0] O_sdram_addr,
     output wire [1:0] O_sdram_ba,
-    inout  wire [15:0] IO_sdram_dq
+    inout  wire [15:0] IO_sdram_dq,
+
+    // Module detection
+    input wire IS_MODULE_DISPLAY_N,
+
+    // I2S
+    output logic I2S_I_SCK,
+    output logic I2S_I_WS,
+    output logic I2S_I_SDO,
+    output logic I2S_I_MCLK,
+
+    // Other signals
+    input wire F_G12,
+    input wire F_G5,
+    input wire F_G15,
+    input wire F_G0,    // pull-up, to determine AtomDisplay/M5Display L=M5
+    input wire F_G2,
+    input wire F_G16,
+    input wire F_G17,
+    input wire F_G25,
+    input wire F_G26
 );
     // SDRAM Controller signals
     logic I_sdrc_rst_n;
@@ -78,33 +98,45 @@ module top (
     logic O_sdrc_rd_valid;
     logic O_sdrc_wrd_ack;
 
-    logic clock;
+    logic clock; /* synthesis syn_keep=1 */
     logic clock_video;
+    //logic clock_video_x5;
     logic reset_n;
     logic reset_video;
     logic [2:0] reset_video_sync = '1;
+    logic dvi_rpll_reset;
+    logic [5:0] dvi_rpll_fbdsel;
+    logic [5:0] dvi_rpll_idsel;
+    logic [5:0] dvi_rpll_odsel;
+
     logic led = 0;
     logic data_in_sync;
     logic lock_main;
-    logic lock_video = 1;
+    logic lock_video;
     logic lock_sdram;
     logic trigger;
     logic processor_is_busy;
     logic [$clog2(74_250_000)-1:0] led_counter = 0;
     logic data_enable; /* synthesis syn_keep=true */
+
+    logic [15:0] video_clock_input_divider;
+    logic [15:0] video_clock_output_divider;
+    logic [15:0] video_clock_feedback_divider;
+    logic        video_clock_config_valid;
+
     assign RGB_DE = data_enable;
 
     assign HDMI_LED_B = led;
     assign HDMI_LED_W = processor_is_busy;
-    //assign LED[2] = led; //I_sdrc_rst_n;
-    assign SYS_LED_B = data_in_sync; //!O_sdrc_busy_n;
-    assign SYS_LED_R = BUS_SPI_CS;
+    assign HDMI_LED_B_ALT = led;
+    assign HDMI_LED_W_ALT = processor_is_busy;
+    assign SYS_LED_B = data_in_sync;    /* only available in ATOM Display */
 
     assign RGB_IDCK = clock_video;
     logic [31:0] reset_reg = '1;
 
-    always_ff @(posedge CLK_IN_50M) begin
-        if( led_counter < 'd50_000_000 ) begin
+    always_ff @(posedge clock_video) begin
+        if( led_counter < 'd74_250_000 ) begin
             led_counter <= led_counter + 1;
         end
         else begin
@@ -122,7 +154,7 @@ module top (
         end
     end
     assign reset_n = !reset_reg[0];
-    assign reset_video = reset_video_sync[0];
+    assign reset_video = reset_video_sync[0] && !lock_video;
     always_ff @(posedge clock_video) begin
         reset_video_sync[2] <= !reset_n;
         reset_video_sync[1:0] <= reset_video_sync[2:1];
@@ -130,7 +162,24 @@ module top (
 
     assign I_sdrc_clk = clock;
     assign I_sdrc_rst_n = reset_n && lock_sdram;
-    assign clock_video = CLK_IN_74M25;
+
+    dvi_rpll dvi_rpll_i(
+        .clkout(clock_video),
+        //.clkoutp(clock),
+        //.clkoutd(clock_video),
+        .lock(lock_video),
+        .reset(dvi_rpll_reset),
+        .clkin(CLK_IN_74M25), //input clkin
+        .fbdsel(dvi_rpll_fbdsel), //input [5:0] fbdsel
+        .idsel(dvi_rpll_idsel), //input [5:0] idsel
+        .odsel(dvi_rpll_odsel) //input [5:0] odsel
+    );
+
+    // dvi_clkdiv dvi_clkdiv_i(
+    //     .clkout(clock_video), //output clkout
+    //     .hclkin(clock_video_x5), //input hclkin
+    //     .resetn(reset_n) //input resetn
+    // );
 
     assign lock_main = lock_sdram;
     //assign lock_sdram = 1;
@@ -142,8 +191,72 @@ module top (
         .clkin(CLK_IN_50M) //input clkin
     );
 
-    wire [23:0] video_data;
-    assign RGB_OUT = video_data; //{video_data[15:11], 3'b0, video_data[10:5], 2'b0, video_data[4:0], 3'b0};
+    // Video clock configuration sequence.
+    // assign dvi_rpll_reset = 0;
+    // assign dvi_rpll_fbdsel = 7'd64 - 7'd4;
+    // assign dvi_rpll_idsel = 7'd64 - 7'd4;
+    // assign dvi_rpll_odsel = 7'd64 - (7'd8 >> 1);
+    always_ff @(posedge clock) begin
+        if( !reset_n ) begin
+            dvi_rpll_reset <= 1;
+            dvi_rpll_fbdsel <= 7'd64 - 7'd4;
+            dvi_rpll_idsel <= 7'd64 - 7'd4;
+            dvi_rpll_odsel <= 7'd64 - (7'd8 >> 1);
+        end
+        else begin
+            dvi_rpll_reset <= video_clock_config_valid;
+            if( video_clock_config_valid ) begin
+                dvi_rpll_fbdsel <= 7'd64 - {1'b0, video_clock_feedback_divider[5:0]};
+                dvi_rpll_idsel <= 7'd64 - {1'b0, video_clock_input_divider[5:0]};
+                dvi_rpll_odsel <= 7'd64 - {2'b00, video_clock_output_divider[5:1]};
+            end
+        end
+    end
+    
+    // I2S connection
+    assign I2S_I_MCLK = clock_video;
+    assign I2S_I_SCK = F_G12;
+    assign I2S_I_SDO = F_G15;
+    assign I2S_I_WS  = F_G0;
+
+    logic is_m5display = 0;
+    logic is_m5display_lock = 0;
+    always_ff @(posedge clock_video) begin
+        if( reset_video ) begin
+            is_m5display <= 0;
+            is_m5display_lock <= 0;
+        end
+        else begin
+            is_m5display <= is_m5display_lock ? is_m5display : !IS_MODULE_DISPLAY_N;
+            is_m5display_lock <= 1;
+        end
+    end
+
+    // Swap pins for M5Display
+    logic [23:0] video_data;
+    assign RGB_OUT[13:0] = video_data[13:0]; 
+    assign RGB_OUT[18] = is_m5display ? video_data[14] : video_data[18];
+    assign RGB_OUT[23] = is_m5display ? video_data[15] : video_data[23];
+    assign RGB_OUT[17] = is_m5display ? video_data[16] : video_data[17];
+    assign RGB_OUT[22] = is_m5display ? video_data[17] : video_data[22];
+    assign RGB_OUT[16] = is_m5display ? video_data[18] : video_data[16];
+    assign RGB_OUT[21] = is_m5display ? video_data[19] : video_data[21];
+    assign RGB_OUT[15] = is_m5display ? video_data[20] : video_data[15];
+    assign RGB_OUT[20] = is_m5display ? video_data[21] : video_data[20];
+    assign RGB_OUT[14] = is_m5display ? video_data[22] : video_data[14];
+    assign RGB_OUT[19] = is_m5display ? video_data[23] : video_data[19];
+
+    logic video_hsync, video_vsync;
+    assign RGB_HSYNC = is_m5display ? video_vsync : video_hsync;
+    assign RGB_VSYNC = is_m5display ? video_hsync : video_vsync;
+
+    logic io_spi_miso;
+    IOBUF iobuf_spi_miso (
+        .O(),
+        .I(io_spi_miso),
+        .OEN(BUS_SPI_CS),
+        .IO(BUS_SPI_MISO)
+    );
 
     M5StackHDMI video_generator_i (
         .reset(!reset_n),
@@ -151,8 +264,8 @@ module top (
         .io_videoClock(clock_video),
         .io_videoReset(reset_video),
         .io_video_pixelData(video_data),
-        .io_video_hSync(RGB_HSYNC),
-        .io_video_vSync(RGB_VSYNC),
+        .io_video_hSync(video_hsync),
+        .io_video_vSync(video_vsync),
         .io_video_dataEnable(data_enable),
         .io_dataInSync(data_in_sync),
         .io_sdrc_selfRefresh(I_sdrc_selfrefresh),
@@ -169,11 +282,15 @@ module top (
         .io_sdrc_rdValid(O_sdrc_rd_valid),
         .io_sdrc_wrdAck(O_sdrc_wrd_ack),
         .io_trigger(trigger),
-        .io_spi_miso(BUS_SPI_MISO),
+        .io_spi_miso(io_spi_miso),
         .io_spi_mosi(BUS_SPI_MOSI),
         .io_spi_sck (BUS_SPI_SCK),
         .io_spi_cs  (BUS_SPI_CS),
         .io_processorIsBusy(processor_is_busy),
+        .io_videoClockConfig_inputDivider(video_clock_input_divider),
+        .io_videoClockConfig_outputDivider(video_clock_output_divider),
+        .io_videoClockConfig_feedbackDivider(video_clock_feedback_divider),
+        .io_videoClockConfigValid(video_clock_config_valid),
         .*
     );
 

@@ -2,8 +2,8 @@
 
 .PHONY: all clean
 
-TARGET ?= atomdisplay
-BITSTREAM_RLE = ../eda/$(TARGET)/build/$(TARGET)/impl/pnr/$(TARGET).rle
+TARGET ?= latency_checker
+BITSTREAM_RLE = ../eda/$(TARGET)/build/atomdisplay/impl/pnr/$(TARGET).rle
 BITSTREAM_HEADER = ./libraries/M5GFX/src/lgfx/v1/panel/Panel_M5HDMI_FS.h
 
 all: $(BITSTREAM_RLE)
@@ -18,7 +18,7 @@ monitor:
 
 
 $(BITSTREAM_RLE):
-	cd ../eda/$(TARGET); make rle
+	cd ../eda/$(TARGET); make
 
 clean:
 	-@$(RM) fs_bitstream.*

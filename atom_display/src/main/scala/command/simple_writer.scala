@@ -30,6 +30,7 @@ import chisel3.util._
 import video.VideoParams
 import sdram.SDRAMBridgeParams
 import axi._
+import spi.SPIData
 
 class SimpleWriter(videoParams: VideoParams, axiParams: AXI4Params) extends Module {
 

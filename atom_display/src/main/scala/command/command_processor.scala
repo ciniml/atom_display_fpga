@@ -33,6 +33,24 @@ import sdram._
 import axi._
 import chisel3.experimental.BundleLiterals._
 import _root_.util._
+import spi.SPIData
+
+/**
+  * Video clock configuration signal to configure FPGA PLL.
+  */
+class VideoClockConfig extends Bundle {
+    val inputDivider = UInt(16.W)       // Input divider
+    val outputDivider = UInt(16.W)      // VCO output divider
+    val feedbackDivider = UInt(16.W)    // Feedback divider
+}
+object VideoClockConfig {
+    def apply(): VideoClockConfig = {
+        new VideoClockConfig()
+    }
+    def default(): VideoClockConfig = {
+        WireInit(VideoClockConfig().Lit(_.inputDivider -> 4.U, _.outputDivider -> 8.U, _.feedbackDivider -> 4.U))
+    }
+}
 
 class CommandProcessor(videoParams: VideoParams, defaultVideoParams: VideoParams, axiParams: AXI4Params) extends Module {
     assert(videoParams.pixelBits == 24)
@@ -47,6 +65,7 @@ class CommandProcessor(videoParams: VideoParams, defaultVideoParams: VideoParams
         val CopyRect = 0x23
         val SetResolutionV = 0xb0
         val SetResolutionH = 0xb1
+        val SetVideoClock = 0xb2
     }
 
     object CommandTypes {
@@ -80,6 +99,7 @@ class CommandProcessor(videoParams: VideoParams, defaultVideoParams: VideoParams
 
         val frameBufferConfig = Output(frameBufferConfigType)
         val videoConfig = Valid(videoConfigType)
+        val videoClockConfig = Valid(VideoClockConfig())
     })
     
     val spiDemux = Module(new IrrevocableUnsafeDemux(new SPIData(), 4))
@@ -93,6 +113,13 @@ class CommandProcessor(videoParams: VideoParams, defaultVideoParams: VideoParams
     io.videoConfig.bits := videoConfig
     io.videoConfig.valid := videoConfigValid
     videoConfigValid := false.B
+
+    // Video clock config
+    val videoClockConfig = RegInit(VideoClockConfig.default())
+    val videoClockConfigValid = RegInit(false.B)
+    io.videoClockConfig.bits := videoClockConfig
+    io.videoClockConfig.valid := videoClockConfigValid
+    videoClockConfigValid := false.B    // Deassert every cycle.
 
     // Pixel data streams
     val pixelDataStreams = 4
@@ -273,6 +300,11 @@ class CommandProcessor(videoParams: VideoParams, defaultVideoParams: VideoParams
     val screenOriginX = (params(0) << 8) | params(1)
     val screenOriginY = (params(2) << 8) | params(3)
 
+    // Clock parameters
+    val clockInputDivider = (params(0) << 8) | params(1)
+    val clockFeedbackDivider = (params(2) << 8) | params(3)
+    val clockOutputDivider = (params(4) << 8) | params(5)
+
     // Screen resolution parameters
     val screenResolutionParamsV = WireDefault(videoConfig)
     screenResolutionParamsV.pulseWidthV := params(0) << 8 | params(1)
@@ -348,6 +380,9 @@ class CommandProcessor(videoParams: VideoParams, defaultVideoParams: VideoParams
                     validCommand := true.B
                 } .elsewhen( dataBody === Commands.SetResolutionV.U || dataBody === Commands.SetResolutionH.U) {
                     paramsToFetch := 9.U
+                    validCommand := true.B
+                } .elsewhen ( dataBody === Commands.SetVideoClock.U ) {
+                    paramsToFetch := 7.U // [Input Divider (2byte)] [Feedback Divider (2byte)] [Output Divider (2byte)] [Check Sum]
                     validCommand := true.B
                 } .otherwise {
                     
@@ -473,6 +508,18 @@ class CommandProcessor(videoParams: VideoParams, defaultVideoParams: VideoParams
                         videoConfig := screenResolutionParamsH
                         videoConfigValid := true.B
                     }
+                }
+            } .elsewhen(command === Commands.SetVideoClock.U ) { // SET_VIDEO_CLOCK
+                when( !checksumIsOk ) {
+                    state := State.sIdle
+                    skipToFirst := true.B
+                } .otherwise {
+                    state := State.sIdle
+                    // Update video clock settings
+                    videoClockConfig.inputDivider := clockInputDivider
+                    videoClockConfig.outputDivider := clockOutputDivider
+                    videoClockConfig.feedbackDivider := clockFeedbackDivider
+                    videoClockConfigValid := true.B
                 }
             } .otherwise {
                 switch( commandType ) {
