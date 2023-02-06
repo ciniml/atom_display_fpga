@@ -1,8 +1,8 @@
-# ATOM Display FPGA Design
+# ATOM Display (Lite) / Display Module FPGA Design
 
 ## 概要
 
-本リポジトリには、M5Stack社が製造・販売している [`ATOM Display`](https://docs.m5stack.com/en/atom/atom_display) に搭載されているFPGA上の論理回路のソースおよび合成手順が含まれている。
+本リポジトリには、M5Stack社が製造・販売している [`ATOM Display`](https://docs.m5stack.com/en/atom/atom_display), [`ATOM Display Lite`](https://docs.m5stack.com/en/atom/atom_display_lite), [`Display Module 13.2`](https://docs.m5stack.com/en/module/Display%20Module%2013.2) (以下 **ATOM Display** と記載)に搭載されているFPGA上の論理回路のソースおよび合成手順が含まれている。
 
 ATOM Displayに搭載されているFPGAはGOWIN社の `GW1NR-LV9QN88` であり、GOWIN社から提供される GOWIN EDA ツールを用いて論理合成、配置配線、ビットストリームの生成を行うことにより、付属のテストコードと結合して、生成したビットストリームを動かすことができる。
 
