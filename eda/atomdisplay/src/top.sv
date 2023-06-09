@@ -99,7 +99,7 @@ module top (
     logic O_sdrc_wrd_ack;
 
     logic clock; /* synthesis syn_keep=1 */
-    logic clock_video;
+    logic clock_video; /* synthesis syn_keep=1 */
     //logic clock_video_x5;
     logic reset_n;
     logic reset_video;

@@ -52,7 +52,7 @@ object VideoClockConfig {
     }
 }
 
-class CommandProcessor(videoParams: VideoParams, defaultVideoParams: VideoParams, axiParams: AXI4Params) extends Module {
+class CommandProcessor(videoParams: VideoParams, defaultVideoParams: VideoParams, axiParams: AXI4Params, enableCopyRect: Boolean) extends Module {
     assert(videoParams.pixelBits == 24)
     assert(axiParams.dataBits == 32)
     
@@ -103,7 +103,7 @@ class CommandProcessor(videoParams: VideoParams, defaultVideoParams: VideoParams
     })
     
     val spiDemux = Module(new IrrevocableUnsafeDemux(new SPIData(), 4))
-    val spiSelect = WireDefault(0.U)
+    val spiSelect = RegInit(0.U)
     spiDemux.io.in <> io.data
     spiDemux.io.select := spiSelect
     
@@ -124,7 +124,7 @@ class CommandProcessor(videoParams: VideoParams, defaultVideoParams: VideoParams
     // Pixel data streams
     val pixelDataStreams = 4
     val pixelDataMux = Module(new IrrevocableUnsafeMux(UInt(videoParams.pixelBits.W), pixelDataStreams))
-    val pixelDataSelect = WireDefault(pixelDataStreams.U)
+    val pixelDataSelect = RegInit(pixelDataStreams.U)
     val pixelDataRemainingBytes = RegInit(0.U(log2Ceil(videoParams.frameBytes + 1).W))
     val frameBufferReaderStreamIndex = pixelDataStreams - 1
     
@@ -206,7 +206,7 @@ class CommandProcessor(videoParams: VideoParams, defaultVideoParams: VideoParams
     }
 
     // Pixel data from pixel data stream
-    val pixelDataSlice = WithIrrevocableRegSlice(WithIrrevocableRegSlice(pixelDataMux.io.out))
+    val pixelDataSlice = WithIrrevocableRegSlice(pixelDataMux.io.out)
     io.writerData.valid <> pixelDataSlice.valid 
     io.writerData.ready <> pixelDataSlice.ready 
     io.writerData.bits.pixelData <> pixelDataSlice.bits
@@ -451,7 +451,7 @@ class CommandProcessor(videoParams: VideoParams, defaultVideoParams: VideoParams
             val commandType = WireDefault(toCommandType(command))
             val commandNumber = WireDefault(toCommandNumber(command))
             when(command === Commands.CopyRect.U ) {    // COPYRECT
-                when( rectRangeError || destRangeError )  {
+                when( enableCopyRect.B || rectRangeError || destRangeError )  {
                     state := State.sIdle
                     skipToFirst := true.B
                 } .otherwise {
@@ -472,6 +472,7 @@ class CommandProcessor(videoParams: VideoParams, defaultVideoParams: VideoParams
                     writerCommandValid := true.B
                     //
                     pixelStreamIndex := frameBufferReaderStreamIndex.U // Input from the reader.
+                    pixelDataSelect := frameBufferReaderStreamIndex.U   // Input from the frame buffer reader
                 }
             } .elsewhen(command === Commands.SetScreenScale.U ) { // SET_SCREEN_SCALE
                 when( !checksumIsOk ) {
@@ -577,7 +578,10 @@ class CommandProcessor(videoParams: VideoParams, defaultVideoParams: VideoParams
                         writerCommand.color := 0.U
                         writerCommandValid := true.B
                         pixelStreamIndex := commandNumber - 1.U // Select pixel stream
-                        pixelDataRemainingBytes := MuxLookup(commandNumber, 0.U, Seq(1.U -> currentAreaPixels, 2.U -> currentAreaPixels*2.U, 3.U -> currentAreaPixels*3.U))
+                        pixelDataSelect := pixelStreamIndex
+                        val bytesToWrite = MuxLookup(commandNumber, 0.U, Seq(1.U -> currentAreaPixels, 2.U -> currentAreaPixels*2.U, 3.U -> currentAreaPixels*3.U))
+                        pixelDataRemainingBytes := bytesToWrite
+                        spiSelect := Mux(bytesToWrite > 0.U, (commandNumber - 1.U) + 1.U, 0.U) // Input pixel data to pixel stream.
                     }
                 }
             }
@@ -585,11 +589,14 @@ class CommandProcessor(videoParams: VideoParams, defaultVideoParams: VideoParams
         is(State.sExecute) {
             when( spiDemux.io.in.valid && spiDemux.io.in.ready && pixelDataRemainingBytes > 0.U) {
                 pixelDataRemainingBytes := pixelDataRemainingBytes - 1.U
+                when( pixelDataRemainingBytes === 1.U ) {
+                    spiSelect := 0.U
+                }
             }
             when(command === Commands.CopyRect.U) {
-                pixelDataSelect := frameBufferReaderStreamIndex.U   // Input from the frame buffer reader
                 when( (readerIsBusyPrev || writerIsBusyPrev) && !(io.readerIsBusy || io.writerIsBusy) ) {
                     // Both reader and writer has finished its work at this cycle.
+                    pixelDataSelect := pixelDataStreams.U
                     state := State.sIdle
                 }
             } .otherwise {
@@ -605,11 +612,8 @@ class CommandProcessor(videoParams: VideoParams, defaultVideoParams: VideoParams
                         }
                     }
                     is( CommandTypes.WriteRaw.U ) {  // WRITE_RAW
-                        when(pixelDataRemainingBytes > 0.U) {
-                            spiSelect := pixelStreamIndex + 1.U // Input pixel data to pixel stream.
-                        }
-                        pixelDataSelect := pixelStreamIndex
                         when(writerIsBusyPrev && !io.writerIsBusy) {
+                            pixelDataSelect := pixelDataStreams.U
                             state := State.sIdle
                         }
                     }

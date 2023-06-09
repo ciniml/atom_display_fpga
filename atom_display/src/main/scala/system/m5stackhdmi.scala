@@ -105,6 +105,7 @@ class M5StackHDMI(defaultVideoParams: VideoParams = PresetVideoParams.Default_12
   val useTestPattern = false      // Write test pattern to SDRAM, then read it by FrameBufferReader.
   val useTestPatternDirect = false // Test pattern generator directly connected to async FIFO. not using SDRC, FrameBufferReader.
   val useSimpleWriter = false
+  val enableCopyRect = false
 
   io.spi <> spiSlave.io.spi
 
@@ -171,16 +172,21 @@ class M5StackHDMI(defaultVideoParams: VideoParams = PresetVideoParams.Default_12
     val processorVideoParams = new VideoParams(videoParams.pixelBits, videoParams.backPorchV, videoParams.pixelsV * 2, videoParams.frontPorchV, videoParams.pulseWidthV, videoParams.backPorchH, videoParams.pixelsH, videoParams.frontPorchH, videoParams.pulseWidthH)
     val readerParams = AXI4Params(sdrc.axi4Params.addressBits, sdrc.axi4Params.dataBits, AXI4ReadOnly, sdrc.axi4Params.maxBurstLength)
     val writerParams = AXI4Params(sdrc.axi4Params.addressBits, sdrc.axi4Params.dataBits, AXI4WriteOnly, sdrc.axi4Params.maxBurstLength)
-    val processor = Module(new CommandProcessor(processorVideoParams, defaultVideoParams, sdrc.axi4Params))
-    val streamReader = Module(new StreamReader(processorVideoParams, readerParams, 8))
+    val processor = Module(new CommandProcessor(processorVideoParams, defaultVideoParams, sdrc.axi4Params, enableCopyRect))
+    val streamReader = if(enableCopyRect) { Some(Module(new StreamReader(processorVideoParams, readerParams, 8))) } else { None }
     val streamWriter = Module(new StreamWriter(processorVideoParams, writerParams, 8))
-    val demux = Module(new AXI4Demux(readerParams, 2))
     
     // Gate frame buffer access from command processor stream reader/writer to ensure the read from frame buffer for video signal generator is not disturbed.
     val enableFrameBufferAccess = !reader.io.active || RegNext(fifo.io.writeHalfFull, false.B)  // Enable frame buffer access if frame buffer reader is inactive and/or the FIFO has enough data.
-    demux.io.in(0) <> reader.io.mem
-    demux.io.in(1) <> WithAXI4Gate(streamReader.io.axi, enableFrameBufferAccess)
-    sdrc.io.axi <> WithAXI4RegSlice(AXIChannelCombine(demux.io.out, WithAXI4Gate(streamWriter.io.axi, enableFrameBufferAccess)))
+    
+    if( enableCopyRect ) {
+      val demux = Module(new AXI4Demux(readerParams, 2))
+      demux.io.in(0) <> reader.io.mem
+      demux.io.in(1) <> WithAXI4Gate(streamReader.get.io.axi, enableFrameBufferAccess)
+      sdrc.io.axi <> WithAXI4RegSlice(AXIChannelCombine(demux.io.out, WithAXI4Gate(streamWriter.io.axi, enableFrameBufferAccess)))
+    } else {
+      sdrc.io.axi <> WithAXI4RegSlice(AXIChannelCombine(reader.io.mem, WithAXI4Gate(streamWriter.io.axi, enableFrameBufferAccess)))
+    }
 
     val spiSlaveData = Wire(Irrevocable(new SPIData))
     spiSlaveData <> Queue(spiSlave.io.receive, 2048)
@@ -190,9 +196,18 @@ class M5StackHDMI(defaultVideoParams: VideoParams = PresetVideoParams.Default_12
     streamWriter.io.command <> processor.io.writerCommand
     streamWriter.io.data <> processor.io.writerData
     streamWriter.io.isBusy <> processor.io.writerIsBusy
-    streamReader.io.command <> processor.io.readerCommand
-    streamReader.io.data <> processor.io.readerData
-    streamReader.io.isBusy <> processor.io.readerIsBusy
+    if( enableCopyRect ) {
+      streamReader.get.io.command <> processor.io.readerCommand
+      streamReader.get.io.data <> processor.io.readerData
+      streamReader.get.io.isBusy <> processor.io.readerIsBusy
+    } else {
+      processor.io.readerCommand.ready := false.B
+      processor.io.readerData.valid := false.B
+      processor.io.readerData.bits.endOfLine := false.B
+      processor.io.readerData.bits.startOfFrame := false.B
+      processor.io.readerData.bits.pixelData := 0.U
+      processor.io.readerIsBusy := true.B
+    }
 
     reader.io.config <> processor.io.frameBufferConfig
 
