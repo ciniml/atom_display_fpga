@@ -74,11 +74,11 @@ module top (
     input wire F_G5,
     input wire F_G15,
     input wire F_G0,    // pull-up, to determine AtomDisplay/M5Display L=M5
-    input wire F_G2,
-    input wire F_G16,
-    input wire F_G17,
-    input wire F_G25,
-    input wire F_G26
+    input wire F_G2
+    //input wire F_G16,
+    //input wire F_G17,
+    //input wire F_G25,
+    //input wire F_G26
 );
     // SDRAM Controller signals
     logic I_sdrc_rst_n;

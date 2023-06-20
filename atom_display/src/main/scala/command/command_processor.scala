@@ -577,8 +577,7 @@ class CommandProcessor(videoParams: VideoParams, defaultVideoParams: VideoParams
                         writerCommand.doFill := false.B
                         writerCommand.color := 0.U
                         writerCommandValid := true.B
-                        pixelStreamIndex := commandNumber - 1.U // Select pixel stream
-                        pixelDataSelect := pixelStreamIndex
+                        pixelDataSelect := commandNumber - 1.U
                         val bytesToWrite = MuxLookup(commandNumber, 0.U, Seq(1.U -> currentAreaPixels, 2.U -> currentAreaPixels*2.U, 3.U -> currentAreaPixels*3.U))
                         pixelDataRemainingBytes := bytesToWrite
                         spiSelect := Mux(bytesToWrite > 0.U, (commandNumber - 1.U) + 1.U, 0.U) // Input pixel data to pixel stream.

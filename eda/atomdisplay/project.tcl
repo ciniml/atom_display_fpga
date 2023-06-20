@@ -4,6 +4,7 @@ set TARGET        [lindex $argv 2]
 set DEVICE_FAMILY [lindex $argv 3]
 set DEVICE_PART   [lindex $argv 4]
 set PROJECT_NAME  [lindex $argv 5]
+set IO_CONSTRAINT [lindex $argv 6]
 
 set_option -output_base_name ${PROJECT_NAME}
 set_device -name $DEVICE_FAMILY $DEVICE_PART
@@ -25,7 +26,7 @@ add_file -type verilog [file normalize ${SRC_DIR}/ip/sdram_rpll/sdram_rpll.v]
 add_file -type verilog [file normalize ${SRC_DIR}/ip/dvi_rpll/dvi_rpll.v]
 #add_file -type verilog [file normalize ${SRC_DIR}/ip/dvi_clkdiv/dvi_clkdiv.v]
 add_file -type verilog [file normalize ${SRC_DIR}/top.sv]
-add_file -type cst [file normalize ${SRC_DIR}/${PROJECT_NAME}.cst]
+add_file -type cst [file normalize ${SRC_DIR}/${IO_CONSTRAINT}.cst]
 add_file -type sdc [file normalize ${SRC_DIR}/m5stack_display.sdc]
 
 run all
