@@ -14,7 +14,8 @@ all: $(BITSTREAM_RLE)
 	platformio run -t upload
 
 monitor:
-	miniterm /dev/ttyUSB0 115200 --raw
+	platformio run -t monitor
+#	miniterm /dev/ttyUSB0 115200 --raw
 
 
 $(BITSTREAM_RLE):

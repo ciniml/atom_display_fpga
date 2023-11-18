@@ -34,6 +34,8 @@ import video._
 import sdram._
 import command._
 import axi._
+import diag._
+import uart._
 import _root_.util._
 
 import java.io.FileInputStream
@@ -45,13 +47,26 @@ import spi.SPIIO
 object PresetVideoParams {
   val Default_1280_720_60 = new VideoParams(24, 20, 720, 5, 5, 220, 1280, 110, 40)
   val Default_1920_1080_30 = new VideoParams(24, 36, 1080, 4, 5, 148, 1920, 88, 44)
+  val Default_1920_1080_24 = new VideoParams(24, 36, 1080, 4, 5, 148, 1920, 638, 44)
   val Generic_1024_768_60 = new VideoParams(24, 63, 768, 64, 5, 117, 1024, 117, 117)  // 351, 132
   val TwiHai_480_1920_60 = new VideoParams(24, 20, 1920, 10, 5, 51, 480, 51, 51)
   val Circular_480_480_60 = new VideoParams(24, 135, 480, 130, 5, 390, 480, 390, 390)
   val LowPixelClock_640_480_60_CVT = new VideoParams(24, 13, 480, 3, 4, 80, 640, 16, 64)  // Pixel clock = 23.75, (actual clock is 23.625)
   val LowPixelClock_640_480_60_CEA_861 = new VideoParams(24, 33, 480, 10, 2, 48, 640, 16, 96)  // Pixel clock = 25.175, (actual clock is 25.18)
   val LowPixelClock_ARGlass_640_400_59p94 = new VideoParams(24, 32, 400, 87, 6, 58, 640, 96, 64)  // 640x400 59.94Hz at Pixel clock = 27.000
-  val Maximum = new VideoParams(24, 511, 2048, 511, 511, 511, 2048, 511, 511) // Max counter size
+  val Maximum = new VideoParams(24, 511, 2048, 511, 511, 511, 2048, 1023, 511) // Max counter size
+
+  // Some special cases
+  val XrealAir_960_540_60 = new VideoParams(24, 36, 1080, 4, 5, 148/2, 1920/2, 88/2, 44/2)
+}
+
+object PresetVideoClocks {
+  def Default_74250000(): VideoClockConfig = {
+    WireInit(VideoClockConfig().Lit(_.inputDivider -> 1.U, _.outputDivider -> 8.U, _.feedbackDivider -> 1.U, _.useHalfClock -> false.B))
+  }
+  def FullHD_148500000(): VideoClockConfig = {
+    WireInit(VideoClockConfig().Lit(_.inputDivider -> 1.U, _.outputDivider -> 4.U, _.feedbackDivider -> 2.U, _.useHalfClock -> true.B))
+  }
 }
 
 @chiselName
@@ -75,9 +90,15 @@ class M5StackHDMI(defaultVideoParams: VideoParams = PresetVideoParams.Default_12
     val processorIsBusy = Output(Bool())
     val videoClockConfig = Output(VideoClockConfig())
     val videoClockConfigValid = Output(Bool())
+    
+    val debugIn = Input(UInt(8.W))
+    val probeOut = Output(Bool())
   })
+  
+  // Configuration for the video multiplier
+  val videoMultiplierConfigType = new VideoMultiplicationConfig(16, 16)
+  val videoMultiplierConfig = RegInit(WireInit(videoMultiplierConfigType.default()))
 
-  //val tpg = Module(new TestPatternGenerator(params.pixelBits, params.pixelsH, params.pixelsV))
   // Frame trigger from Video 
   val triggerFromVideo = Wire(Bool())
   val trigger = RegInit(false.B)
@@ -85,16 +106,13 @@ class M5StackHDMI(defaultVideoParams: VideoParams = PresetVideoParams.Default_12
   triggerSync := triggerFromVideo
   trigger := triggerSync
   io.trigger := trigger
+  // Is vertical active region?
+  val vActiveFromVideo = Wire(Bool())
+  val vActive = RegNext(RegNext(vActiveFromVideo, false.B), false.B)
+
   val sdrc = Module(new SDRCBridge(sdramParams)) 
   val fifo = Module(new AsyncFIFO(new VideoSignal(videoParams.pixelBits), 12)) // 2^12 = 4096 [pixels] depth FIFO
   reader.io.trigger := trigger
-  // val scaling = 2
-  // reader.io.config.pixelsH := (params.pixelsH / scaling).U
-  // reader.io.config.pixelsV := (params.pixelsV / scaling).U
-  // reader.io.config.startX := 0.U
-  // reader.io.config.startY := 0.U
-  // reader.io.config.scaleX := scaling.U
-  // reader.io.config.scaleY := scaling.U
   io.sdrc <> sdrc.io.sdrc
 
   val processorIsBusy = WireDefault(false.B)
@@ -102,8 +120,8 @@ class M5StackHDMI(defaultVideoParams: VideoParams = PresetVideoParams.Default_12
 
   // SPI Command interface
   val spiSlave = Module(new SPISlave())
-  val useTestPattern = false      // Write test pattern to SDRAM, then read it by FrameBufferReader.
-  val useTestPatternDirect = false // Test pattern generator directly connected to async FIFO. not using SDRC, FrameBufferReader.
+  val useTestPattern = false       // Write test pattern to SDRAM, then read it by FrameBufferReader.
+  val useTestPatternDirect = false  // Test pattern generator directly connected to async FIFO. not using SDRC, FrameBufferReader.
   val useSimpleWriter = false
   val enableCopyRect = false
 
@@ -114,8 +132,8 @@ class M5StackHDMI(defaultVideoParams: VideoParams = PresetVideoParams.Default_12
   val videoConfigValid = RegInit(false.B)
 
   // Video clock config
-  val videoClockConfig = RegInit(VideoClockConfig.default())
-  val videoClockConfigValid = RegInit(false.B)
+  val videoClockConfig = RegInit(PresetVideoClocks.Default_74250000())
+  val videoClockConfigValid = RegInit(useTestPatternDirect.B)
 
   // Test frame buffer writer
   if( useTestPattern ) {
@@ -209,8 +227,21 @@ class M5StackHDMI(defaultVideoParams: VideoParams = PresetVideoParams.Default_12
       processor.io.readerIsBusy := true.B
     }
 
-    reader.io.config <> processor.io.frameBufferConfig
+    // Framebuffer reader configuration
+    val frameBufferConfigType = processor.frameBufferConfigType
+    val frameBufferConfig = Wire(frameBufferConfigType)
+    frameBufferConfig.pixelsH := processor.io.frameBufferConfig.pixelsH
+    frameBufferConfig.pixelsV := processor.io.frameBufferConfig.pixelsV
+    frameBufferConfig.startX := processor.io.frameBufferConfig.startX
+    frameBufferConfig.startY := processor.io.frameBufferConfig.startY
+    frameBufferConfig.scaleX := 1.U // Fixed to 1. Use video signal generator scaling instead.
+    frameBufferConfig.scaleY := 1.U // Fixed to 1. Use video signal generator scaling instead.
+    reader.io.config <> frameBufferConfig
 
+    // Set video multiplier configuration
+    videoMultiplierConfig.multiplierH := processor.io.frameBufferConfig.scaleX
+    videoMultiplierConfig.multiplierV := processor.io.frameBufferConfig.scaleY
+    
     processorIsBusy := processor.io.isBusy
 
     // Update video config
@@ -237,7 +268,7 @@ class M5StackHDMI(defaultVideoParams: VideoParams = PresetVideoParams.Default_12
   fifo.io.readReset := io.videoReset
 
   if( useTestPatternDirect ) {
-    val tpg = Module(new TestPatternGenerator(defaultVideoParams.pixelBits, defaultVideoParams.pixelsH, defaultVideoParams.pixelsV))
+    val tpg = Module(new TestPatternGenerator(defaultVideoParams.pixelBits, defaultVideoParams.pixelsH, defaultVideoParams.pixelsV/2))
     fifo.io.write <> WithIrrevocableRegSlice(tpg.io.data)
     sdrc.io.axi.ar.get.valid := false.B
     sdrc.io.axi.ar.get.bits.addr := 0.U
@@ -256,13 +287,14 @@ class M5StackHDMI(defaultVideoParams: VideoParams = PresetVideoParams.Default_12
     spiSlave.io.send.valid := false.B
     spiSlave.io.send.bits := 0.U
 
-    val scaling = 1
-    reader.io.config.pixelsH := (defaultVideoParams.pixelsH / scaling).U
-    reader.io.config.pixelsV := (defaultVideoParams.pixelsV / scaling).U
+    val scalingX = 1
+    val scalingY = 2
+    reader.io.config.pixelsH := (defaultVideoParams.pixelsH / scalingX).U
+    reader.io.config.pixelsV := (defaultVideoParams.pixelsV / scalingY).U
     reader.io.config.startX := 0.U
     reader.io.config.startY := 0.U
-    reader.io.config.scaleX := scaling.U
-    reader.io.config.scaleY := scaling.U
+    reader.io.config.scaleX := scalingX.U
+    reader.io.config.scaleY := scalingY.U
 
     reader.io.mem.r.get.bits.last.get := false.B
     reader.io.mem.r.get.bits.data := 0.U
@@ -271,19 +303,43 @@ class M5StackHDMI(defaultVideoParams: VideoParams = PresetVideoParams.Default_12
     reader.io.mem.ar.get.ready := false.B
 
     reader.io.data.ready := false.B
+
+    videoClockConfigValid := false.B
   } else {
     fifo.io.write <> WithIrrevocableRegSlice(reader.io.data)
   }
 
-
   withClockAndReset(io.videoClock, io.videoReset) {
-    val videoSignalGenerator = Module(new VideoSignalGenerator(defaultVideoParams, videoParams))
-    videoSignalGenerator.io.data <> fifo.io.read
+    val videoSignalGenerator = Module(new VideoSignalGenerator(defaultVideoParams, videoParams, maxMultiplierH = 16, maxMultiplierV = 16))
+    val videoDataSlice = Module(new IrrevocableRegSlice(chiselTypeOf(fifo.io.read.bits)))
+    videoDataSlice.io.in <> fifo.io.read
+    videoSignalGenerator.io.data <> videoDataSlice.io.out
     io.dataInSync <> videoSignalGenerator.io.dataInSync
     io.video <> videoSignalGenerator.io.video
-    triggerFromVideo := videoSignalGenerator.io.triggerFrame
+    val triggerFrameReg = RegNext(videoSignalGenerator.io.triggerFrame, false.B)
+    triggerFromVideo := RegNext(videoSignalGenerator.io.triggerFrame | triggerFrameReg, false.B)  // Extend trigger signal to 2 cycles to ensure the trigger signal is not missed by main clock domain.
+    vActiveFromVideo := videoSignalGenerator.io.vActive
     videoSignalGenerator.io.config.bits := videoConfig
     videoSignalGenerator.io.config.valid := RegNext(RegNext(videoConfigValid, false.B), false.B)
+
+    videoSignalGenerator.io.multiplierConfig.valid := true.B
+    videoSignalGenerator.io.multiplierConfig.bits := RegNext(RegNext(videoMultiplierConfig, videoMultiplierConfigType.default()), videoMultiplierConfigType.default())
+  }
+
+  // Debug probe
+  {
+    val probe = Module(new diag.Probe(new diag.ProbeConfig(bufferDepth = 1024, triggerPosition = 512), 8))
+    probe.io.in := io.debugIn
+    probe.io.trigger := io.debugIn(0)
+    val probeFrameAdapter = Module(new diag.ProbeFrameAdapter(probe.width))
+    probeFrameAdapter.io.in <> probe.io.out   // プローブの出力をフレームアダプタの入力に接続
+    // UART送信モジュールを構築 (clockFreqHzにはクロック周波数が入っている)
+    // 8bit, 115200bps
+    val clockFreqHz = 62500000
+    val probeUartTx = Module(new UartTx(numberOfBits = 8, baudDivider = clockFreqHz / 115200))
+    probeUartTx.io.in <> probeFrameAdapter.io.out // フレームアダプタの出力をUART TXの入力に接続
+    // UART信号出力をモジュールの probeOut ポートから出力
+    io.probeOut := probeUartTx.io.tx
   }
 }
 

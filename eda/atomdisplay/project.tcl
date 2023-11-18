@@ -13,7 +13,7 @@ set_device -name GW1NR-9C GW1NR-LV9QN88C6/I5
 set_option -verilog_std sysv2017
 set_option -vhdl_std vhd2008
 set_option -print_all_synthesis_warning 1
-set_option -place_option 1
+set_option -place_option 2
 set_option -route_option 2
 
 set_option -use_jtag_as_gpio 1
@@ -24,6 +24,7 @@ add_file -type verilog [file normalize ${RTL_DIR}/m5stack_hdmi/video_generator.v
 add_file -type verilog [file normalize ${SRC_DIR}/ip/SDRAM_controller_top_SIP/SDRAM_controller_top_SIP.v]
 add_file -type verilog [file normalize ${SRC_DIR}/ip/sdram_rpll/sdram_rpll.v]
 add_file -type verilog [file normalize ${SRC_DIR}/ip/dvi_rpll/dvi_rpll.v]
+add_file -type verilog [file normalize ${SRC_DIR}/ip/dvi_dcs/dvi_dcs.v]
 #add_file -type verilog [file normalize ${SRC_DIR}/ip/dvi_clkdiv/dvi_clkdiv.v]
 add_file -type verilog [file normalize ${SRC_DIR}/top.sv]
 add_file -type cst [file normalize ${SRC_DIR}/${IO_CONSTRAINT}.cst]

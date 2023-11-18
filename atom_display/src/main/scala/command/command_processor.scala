@@ -42,13 +42,14 @@ class VideoClockConfig extends Bundle {
     val inputDivider = UInt(16.W)       // Input divider
     val outputDivider = UInt(16.W)      // VCO output divider
     val feedbackDivider = UInt(16.W)    // Feedback divider
+    val useHalfClock = Bool()
 }
 object VideoClockConfig {
     def apply(): VideoClockConfig = {
         new VideoClockConfig()
     }
     def default(): VideoClockConfig = {
-        WireInit(VideoClockConfig().Lit(_.inputDivider -> 4.U, _.outputDivider -> 8.U, _.feedbackDivider -> 4.U))
+        WireInit(VideoClockConfig().Lit(_.inputDivider -> 4.U, _.outputDivider -> 8.U, _.feedbackDivider -> 4.U, _.useHalfClock -> false.B))
     }
 }
 
@@ -83,7 +84,7 @@ class CommandProcessor(videoParams: VideoParams, defaultVideoParams: VideoParams
     val videoConfigType = VideoConfig(videoParams)
     val streamReaderCommandType = StreamReaderCommand(videoParams, axiParams)
     val streamWriterCommandType = StreamWriterCommand(videoParams, axiParams)
-    val frameBufferConfigType = new FrameBufferReaderConfig(videoParams.pixelBits, videoParams.pixelsH, videoParams.pixelsV)
+    val frameBufferConfigType = new FrameBufferReaderConfig(videoParams.pixelBits, videoParams.pixelsH, videoParams.pixelsV, 1)
     val io = IO(new Bundle{
         val data = Flipped(Irrevocable(new SPIData()))
         val result = Irrevocable(UInt(8.W))
@@ -137,30 +138,30 @@ class CommandProcessor(videoParams: VideoParams, defaultVideoParams: VideoParams
     val pixelDataWidth8to16 = Module(WidthConverter(8, 16))
     pixelDataWidth8to16.io.enq.valid <> spiDemux.io.out(2).valid
     pixelDataWidth8to16.io.enq.ready <> spiDemux.io.out(2).ready
-    pixelDataWidth8to16.io.enq.bits.body <> spiDemux.io.out(2).bits.data
+    pixelDataWidth8to16.io.enq.bits.data <> spiDemux.io.out(2).bits.data
     pixelDataWidth8to16.io.enq.bits.last := false.B
     pixelDataMux.io.in(1).valid <> pixelDataWidth8to16.io.deq.valid
     pixelDataMux.io.in(1).ready <> pixelDataWidth8to16.io.deq.ready
-    pixelDataMux.io.in(1).bits := RGB565ToBGR888(SwapByteOrder(pixelDataWidth8to16.io.deq.bits.body, 2))   // WidthConverter puts the bytes from LSB to MSB, so we have to swap bytes to restore RGB565 stream.
+    pixelDataMux.io.in(1).bits := RGB565ToBGR888(SwapByteOrder(pixelDataWidth8to16.io.deq.bits.data, 2))   // WidthConverter puts the bytes from LSB to MSB, so we have to swap bytes to restore RGB565 stream.
     //  index 3: RGB888 -> index 2: BGR888
     val pixelDataWidth8to24 = Module(WidthConverter(8, 24))
     pixelDataWidth8to24.io.enq.valid <> spiDemux.io.out(3).valid
     pixelDataWidth8to24.io.enq.ready <> spiDemux.io.out(3).ready
-    pixelDataWidth8to24.io.enq.bits.body <> spiDemux.io.out(3).bits.data
+    pixelDataWidth8to24.io.enq.bits.data <> spiDemux.io.out(3).bits.data
     pixelDataWidth8to24.io.enq.bits.last := false.B
     pixelDataMux.io.in(2).valid <> pixelDataWidth8to24.io.deq.valid
     pixelDataMux.io.in(2).ready <> pixelDataWidth8to24.io.deq.ready
-    pixelDataMux.io.in(2).bits := pixelDataWidth8to24.io.deq.bits.body  // WidthConverter puts the bytes from LSB to MSB, so R,G,B,R,... bytes stream is already converted to BGR888 stream.
+    pixelDataMux.io.in(2).bits := pixelDataWidth8to24.io.deq.bits.data  // WidthConverter puts the bytes from LSB to MSB, so R,G,B,R,... bytes stream is already converted to BGR888 stream.
     //  Frame buffer reader -> index 3: BGR888
     val readerDataQueue = Module(new PacketQueue(Flushable(io.readerData.bits.pixelData), 2048))
     readerDataQueue.io.write.valid := io.readerData.valid
     io.readerData.ready := readerDataQueue.io.write.ready
-    readerDataQueue.io.write.bits.body := io.readerData.bits.pixelData
+    readerDataQueue.io.write.bits.data := io.readerData.bits.pixelData
     readerDataQueue.io.write.bits.last := io.readerData.bits.endOfLine
 
     pixelDataMux.io.in(3).valid <> readerDataQueue.io.read.valid
     pixelDataMux.io.in(3).ready <> readerDataQueue.io.read.ready
-    pixelDataMux.io.in(3).bits := readerDataQueue.io.read.bits.body
+    pixelDataMux.io.in(3).bits := readerDataQueue.io.read.bits.data
 
     // Command stream (index 0)
     val dataReg = WithIrrevocableRegSlice(spiDemux.io.out(0))
@@ -304,6 +305,7 @@ class CommandProcessor(videoParams: VideoParams, defaultVideoParams: VideoParams
     val clockInputDivider = (params(0) << 8) | params(1)
     val clockFeedbackDivider = (params(2) << 8) | params(3)
     val clockOutputDivider = (params(4) << 8) | params(5)
+    val useHalfClock = params(6)(0)
 
     // Screen resolution parameters
     val screenResolutionParamsV = WireDefault(videoConfig)
@@ -382,7 +384,7 @@ class CommandProcessor(videoParams: VideoParams, defaultVideoParams: VideoParams
                     paramsToFetch := 9.U
                     validCommand := true.B
                 } .elsewhen ( dataBody === Commands.SetVideoClock.U ) {
-                    paramsToFetch := 7.U // [Input Divider (2byte)] [Feedback Divider (2byte)] [Output Divider (2byte)] [Check Sum]
+                    paramsToFetch := 8.U // [Input Divider (2byte)] [Feedback Divider (2byte)] [Output Divider (2byte)] [Flags] [Check Sum]
                     validCommand := true.B
                 } .otherwise {
                     
@@ -451,7 +453,7 @@ class CommandProcessor(videoParams: VideoParams, defaultVideoParams: VideoParams
             val commandType = WireDefault(toCommandType(command))
             val commandNumber = WireDefault(toCommandNumber(command))
             when(command === Commands.CopyRect.U ) {    // COPYRECT
-                when( enableCopyRect.B || rectRangeError || destRangeError )  {
+                when( !enableCopyRect.B || rectRangeError || destRangeError )  {
                     state := State.sIdle
                     skipToFirst := true.B
                 } .otherwise {
@@ -520,6 +522,7 @@ class CommandProcessor(videoParams: VideoParams, defaultVideoParams: VideoParams
                     videoClockConfig.inputDivider := clockInputDivider
                     videoClockConfig.outputDivider := clockOutputDivider
                     videoClockConfig.feedbackDivider := clockFeedbackDivider
+                    videoClockConfig.useHalfClock := useHalfClock
                     videoClockConfigValid := true.B
                 }
             } .otherwise {
@@ -629,7 +632,7 @@ class CommandProcessor(videoParams: VideoParams, defaultVideoParams: VideoParams
             when( command === Commands.ReadID.U ) {
                 when( (!resultOutputValid || resultOutputReady) && resultsSent < 4.U ) {
                     resultOutputValid := true.B
-                    resultOutputData := MuxLookup(resultsSent, 0.U, Seq(0.U -> 'H'.U, 1.U -> 'D'.U, 2.U -> 0.U, 3.U -> 3.U))
+                    resultOutputData := MuxLookup(resultsSent, 0.U, Seq(0.U -> 'H'.U, 1.U -> 'D'.U, 2.U -> 0.U, 3.U -> 4.U))
                     resultsSent := resultsSent + 1.U
                     isLastResult := resultsSent === 3.U
                 }

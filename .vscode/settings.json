@@ -1,5 +1,13 @@
 {
     "files.watcherExclude": {
         "**/target": true
-    }
+    },
+    "files.associations": {
+        "*.tcc": "cpp",
+        "bitset": "cpp",
+        "memory": "cpp",
+        "random": "cpp",
+        "optional": "cpp"
+    },
+    "livePreview.defaultPreviewPath": "/eda/atomdisplay/build/atomdisplay/impl/pnr/atomdisplay.tr.html"
 }

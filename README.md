@@ -5,7 +5,7 @@
 本リポジトリには、M5Stack社が製造・販売している [`ATOM Display`](https://docs.m5stack.com/en/atom/atom_display), [`ATOM Display Lite`](https://docs.m5stack.com/en/atom/atom_display_lite), [`Display Module 13.2`](https://docs.m5stack.com/en/module/Display%20Module%2013.2) (以下 **ATOM Display** と記載)に搭載されているFPGA上の論理回路のソースおよび合成手順が含まれている。
 
 ATOM Displayに搭載されているFPGAはGOWIN社の `GW1NR-LV9QN88` であり、GOWIN社から提供される GOWIN EDA ツールを用いて論理合成、配置配線、ビットストリームの生成を行うことにより、付属のテストコードと結合して、生成したビットストリームを動かすことができる。
-
+(注：GOWIN EDA Education版非対応のデバイスなので、GOWIN EDA Standard版が必要)
 ## システム構成
 
 ![ブロック図](doc/block.drawio.svg)
@@ -57,7 +57,7 @@ DHCENC                      | 0/4  0%
 
 * Chisel 3.4.3が動作する環境
   * https://github.com/chipsalliance/chisel3/blob/master/SETUP.md
-* GOWIN EDA v1.9.8
+* GOWIN EDA v1.9.8.08
   * https://www.gowinsemi.com/ja/support/download_eda/
 * PlatformIO
   * https://docs.platformio.org/en/latest/core/installation.html
