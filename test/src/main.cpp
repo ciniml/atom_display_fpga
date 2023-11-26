@@ -1,4 +1,3 @@
-//#define USE_MODULE_DISPLAY
 #if 0
 # define LGFX_USE_V1
 # include <LovyanGFX.hpp>
@@ -10,18 +9,20 @@
 #endif
 
 #ifndef USE_MODULE_DISPLAY
-//static M5AtomDisplay display(1280, 720);
+static M5AtomDisplay display(1280, 720);
 //static M5AtomDisplay display(640, 360, 60, 1280, 720);
 //static M5AtomDisplay display(1024, 768, 60, 1024, 768);
 //static M5AtomDisplay display(960, 540, 60);
-static M5AtomDisplay display(960, 540, 60, 960, 1080, 0, 0, 148500000U);
+//static M5AtomDisplay display(320, 180, 60, 960, 1080, 0, 0, 148500000U);
 #else
-// static M5ModuleDisplay display(1280, 720);
-// //static M5ModuleDisplay display = { 1024, 768, 60, 1024, 768 };
-// //static M5ModuleDisplay display = { 640, 480, 60, 640, 480 };
-// static M5ModuleDisplay display = { 1920, 1080, 24, 1920, 1080, };
-//M5ModuleDisplay display(640, 480);
-static M5ModuleDisplay display(960, 540, 60, 960, 1080, 1, 2, 148500000U);
+static M5ModuleDisplay display(1280, 720);
+//static M5ModuleDisplay display = { 1024, 768, 60, 1024, 768 };
+//static M5ModuleDisplay display = { 640, 480, 60, 640, 480 };
+//static M5ModuleDisplay display = { 1920, 1080, 24, 1920, 1080, };
+//static M5ModuleDisplay display(640, 480);
+//static M5ModuleDisplay display(960, 540, 60, 960, 1080, 1, 2, 148500000U);
+//static M5ModuleDisplay display(320, 180, 60, 960, 1080, 0, 0, 148500000U);
+
 #endif
 
 // void setup(void)
@@ -69,9 +70,9 @@ M5Canvas cv;
 void setup(void)
 {
   log_e("Initializing Display...");
-  printf("hoge\n");
   if( !display.init() ) {
     log_e("failed.");
+    while(true) delay(1);
   } else {
     display.setTextScroll(true);
     log_e("done.");
@@ -119,6 +120,21 @@ void loop(void)
   int c = rand();
   display.fillRect(x, y, w, h, c);
 }
+
+// void loop(void)
+// {
+//   static bool drawn = false;
+//   if( drawn ) return;
+
+//   const int multiplier = 4;
+//   display.fillRect(0, 0, display.width(), display.height(), TFT_BLACK);
+//   for(int x = 0; x < display.width()/multiplier; x++) {
+//     display.drawLine(x*multiplier, 0, x*multiplier, display.height(), TFT_WHITE);
+//   }
+//   display.drawRect(0, 0, display.width(), display.height(), TFT_WHITE);
+
+//   drawn = true;
+// }
 
 // 通信内容がコードから読める版
 void loop_spicmd(void)

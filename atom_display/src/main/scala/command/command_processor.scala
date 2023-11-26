@@ -84,7 +84,7 @@ class CommandProcessor(videoParams: VideoParams, defaultVideoParams: VideoParams
     val videoConfigType = VideoConfig(videoParams)
     val streamReaderCommandType = StreamReaderCommand(videoParams, axiParams)
     val streamWriterCommandType = StreamWriterCommand(videoParams, axiParams)
-    val frameBufferConfigType = new FrameBufferReaderConfig(videoParams.pixelBits, videoParams.pixelsH, videoParams.pixelsV, 1)
+    val frameBufferConfigType = new FrameBufferReaderConfig(videoParams.pixelBits, videoParams.pixelsH, videoParams.pixelsV, 16)
     val io = IO(new Bundle{
         val data = Flipped(Irrevocable(new SPIData()))
         val result = Irrevocable(UInt(8.W))

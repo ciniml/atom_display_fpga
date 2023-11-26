@@ -126,7 +126,7 @@ module top (
     logic        video_clock_use_half_clock = 0;
     logic        video_clock_config_valid;
 
-    logic [7:0]  debugIn;
+    logic [35:0]  debugIn;
     logic        probeOut;
 
     assign HDMI_LED_B = led;
@@ -135,8 +135,19 @@ module top (
     assign HDMI_LED_W_ALT = reset_n;
     assign SYS_LED_B = reset_n;    /* only available in ATOM Display */
 
-    assign RGB_IDCK = clock_video_nondiv;   // HDMI pixel clock is always PLL non-div output.
+    //assign RGB_IDCK = clock_video_nondiv;   // HDMI pixel clock is always PLL non-div output.
     logic [31:0] reset_reg = '1;
+
+    IODELAY #(
+        .C_STATIC_DLY(0)
+    ) iodelay_idck (
+        .DI(clock_video_nondiv),
+        .SDTAP(0),
+        .SETN(0),
+        .VALUE(0),
+        .DO(RGB_IDCK),
+        .DF()
+    );
 
     // always_ff @(posedge clock_video) begin
     //     if( led_counter < 'd74_250_000 ) begin
@@ -238,7 +249,7 @@ module top (
             is_m5display_lock <= 0;
         end
         else begin
-            is_m5display <= is_m5display_lock ? is_m5display : !IS_MODULE_DISPLAY_N;
+            is_m5display <= is_m5display_lock ? is_m5display : 1; //!IS_MODULE_DISPLAY_N;
             is_m5display_lock <= 1;
         end
     end
@@ -456,12 +467,23 @@ module top (
     );
 
     // debug configuration
-    assign debugIn = 0;
-    // assign debugIn[0] = BUS_SPI_CS;
-    // assign debugIn[1] = O_sdrc_init_done;
-    // assign debugIn[2] = O_sdrc_busy_n;
-    // assign debugIn[7:3] = 7'b0;
-    // assign F_G5 = probeOut;
+    // assign debugIn[0] = !I_sdrc_rd_n;
+    // assign debugIn[1] = !I_sdrc_wr_n;
+    // assign debugIn[2] = !O_sdrc_busy_n;
+    // assign debugIn[3] = 0;
+    // assign debugIn[35:4] = I_sdrc_data; //I_sdrc_addr[3:0];
+    assign debugIn[0] = O_sdrc_rd_valid && O_sdrc_data != 32'hffffffff;
+    assign debugIn[1] = O_sdrc_wrd_ack;
+    assign debugIn[2] = !O_sdrc_busy_n;
+    assign debugIn[3] = 0;
+    assign debugIn[35:4] = O_sdrc_data;
+    // assign debugIn[0] = video_de;
+    // assign debugIn[1] = video_hsync;
+    // assign debugIn[2] = video_vsync;
+    // assign debugIn[3] = 0;
+    // assign debugIn[27:4] = video_data; //I_sdrc_addr[3:0];
+    // assign debugIn[35:28] = 0;
+    assign F_G5 = probeOut;
 endmodule
 
 `default_nettype wire

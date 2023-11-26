@@ -70,19 +70,19 @@ object PresetVideoClocks {
 }
 
 @chiselName
-class M5StackHDMI(defaultVideoParams: VideoParams = PresetVideoParams.Default_1280_720_60) extends Module {
-  val videoParams = PresetVideoParams.Maximum
-  val videoConfigType = VideoConfig(videoParams)
+class M5StackHDMI(defaultVideoParams: VideoParams = PresetVideoParams.Default_1280_720_60, useProbe: Boolean = false) extends Module {
+  val maxVideoParams = PresetVideoParams.Maximum
+  val videoConfigType = VideoConfig(maxVideoParams)
   val fullPageBurstLength = 256 * 2 / 4 // 256 [columns/row] * 2 [bytes/column] / 4 [bytes/address] (full page burst)
   val maxBurstPixels = 160 //(fullPageBurstLength * 4 / 12) * 4
   val maxBurstLength = maxBurstPixels * 3 / 4
-  val reader = Module(new FrameBufferReader(videoParams.pixelBits, videoParams.pixelsH, videoParams.pixelsV, 32, maxBurstLength))
+  val reader = Module(new FrameBufferReader(maxVideoParams.pixelBits, maxVideoParams.pixelsH, maxVideoParams.pixelsV, 32, maxBurstLength))
   val sdramParams = new SDRAMBridgeParams(reader.axiParams.addressBits - 2, 4, maxBurstLength)
 
   val io = IO(new Bundle{
     val videoClock = Input(Clock())
     val videoReset = Input(Bool())
-    val video = new VideoIO(videoParams.pixelBits)
+    val video = new VideoIO(maxVideoParams.pixelBits)
     val dataInSync = Output(Bool())
     val trigger = Output(Bool())
     val sdrc = new SDRCIO(sdramParams)
@@ -91,7 +91,7 @@ class M5StackHDMI(defaultVideoParams: VideoParams = PresetVideoParams.Default_12
     val videoClockConfig = Output(VideoClockConfig())
     val videoClockConfigValid = Output(Bool())
     
-    val debugIn = Input(UInt(8.W))
+    val debugIn = Input(UInt(36.W))
     val probeOut = Output(Bool())
   })
   
@@ -111,7 +111,7 @@ class M5StackHDMI(defaultVideoParams: VideoParams = PresetVideoParams.Default_12
   val vActive = RegNext(RegNext(vActiveFromVideo, false.B), false.B)
 
   val sdrc = Module(new SDRCBridge(sdramParams)) 
-  val fifo = Module(new AsyncFIFO(new VideoSignal(videoParams.pixelBits), 12)) // 2^12 = 4096 [pixels] depth FIFO
+  val fifo = Module(new AsyncFIFO(new VideoSignal(maxVideoParams.pixelBits), 12)) // 2^12 = 4096 [pixels] depth FIFO
   reader.io.trigger := trigger
   io.sdrc <> sdrc.io.sdrc
 
@@ -138,16 +138,16 @@ class M5StackHDMI(defaultVideoParams: VideoParams = PresetVideoParams.Default_12
   // Test frame buffer writer
   if( useTestPattern ) {
     val tpg = Module(new TestPatternGenerator(defaultVideoParams.pixelBits, defaultVideoParams.pixelsH, defaultVideoParams.pixelsV))
-    val writer = Module(new StreamWriter(defaultVideoParams, sdrc.axi4Params))
+    val writer = Module(new StreamWriter(maxVideoParams, sdrc.axi4Params))
     // Full screen transfer
     writer.io.command.valid := true.B
     writer.io.command.bits.addressOffset := 0.U
     writer.io.command.bits.startX := 0.U
-    writer.io.command.bits.endXInclusive := (videoParams.pixelsH - 1).U
+    writer.io.command.bits.endXInclusive := (defaultVideoParams.pixelsH - 1).U
     writer.io.command.bits.startY := 0.U
-    writer.io.command.bits.endYInclusive := (videoParams.pixelsV - 1).U
-    writer.io.command.bits.doFill := false.B
-    writer.io.command.bits.color := 0.U
+    writer.io.command.bits.endYInclusive := (defaultVideoParams.pixelsV - 1).U
+    writer.io.command.bits.doFill := true.B
+    writer.io.command.bits.color := "xffffff".U
     writer.io.data <> tpg.io.data
     sdrc.io.axi.aw.get <> writer.io.axi.aw.get
     sdrc.io.axi.w.get <> writer.io.axi.w.get
@@ -187,7 +187,7 @@ class M5StackHDMI(defaultVideoParams: VideoParams = PresetVideoParams.Default_12
   } else if( !useTestPatternDirect ) {
     // Define video parameters for processor.
     // No front/back porches, double pixel heights for accessing frame buffer and off screen buffer.
-    val processorVideoParams = new VideoParams(videoParams.pixelBits, videoParams.backPorchV, videoParams.pixelsV * 2, videoParams.frontPorchV, videoParams.pulseWidthV, videoParams.backPorchH, videoParams.pixelsH, videoParams.frontPorchH, videoParams.pulseWidthH)
+    val processorVideoParams = new VideoParams(maxVideoParams.pixelBits, maxVideoParams.backPorchV, maxVideoParams.pixelsV * 2, maxVideoParams.frontPorchV, maxVideoParams.pulseWidthV, maxVideoParams.backPorchH, maxVideoParams.pixelsH, maxVideoParams.frontPorchH, maxVideoParams.pulseWidthH)
     val readerParams = AXI4Params(sdrc.axi4Params.addressBits, sdrc.axi4Params.dataBits, AXI4ReadOnly, sdrc.axi4Params.maxBurstLength)
     val writerParams = AXI4Params(sdrc.axi4Params.addressBits, sdrc.axi4Params.dataBits, AXI4WriteOnly, sdrc.axi4Params.maxBurstLength)
     val processor = Module(new CommandProcessor(processorVideoParams, defaultVideoParams, sdrc.axi4Params, enableCopyRect))
@@ -239,8 +239,8 @@ class M5StackHDMI(defaultVideoParams: VideoParams = PresetVideoParams.Default_12
     reader.io.config <> frameBufferConfig
 
     // Set video multiplier configuration
-    videoMultiplierConfig.multiplierH := processor.io.frameBufferConfig.scaleX
-    videoMultiplierConfig.multiplierV := processor.io.frameBufferConfig.scaleY
+    videoMultiplierConfig.multiplierH := Mux(processor.io.frameBufferConfig.scaleX === 0.U, 1.U, processor.io.frameBufferConfig.scaleX)
+    videoMultiplierConfig.multiplierV := Mux(processor.io.frameBufferConfig.scaleY === 0.U, 1.U, processor.io.frameBufferConfig.scaleY)
     
     processorIsBusy := processor.io.isBusy
 
@@ -268,7 +268,7 @@ class M5StackHDMI(defaultVideoParams: VideoParams = PresetVideoParams.Default_12
   fifo.io.readReset := io.videoReset
 
   if( useTestPatternDirect ) {
-    val tpg = Module(new TestPatternGenerator(defaultVideoParams.pixelBits, defaultVideoParams.pixelsH, defaultVideoParams.pixelsV/2))
+    val tpg = Module(new TestPatternGenerator(defaultVideoParams.pixelBits, defaultVideoParams.pixelsH, defaultVideoParams.pixelsV))
     fifo.io.write <> WithIrrevocableRegSlice(tpg.io.data)
     sdrc.io.axi.ar.get.valid := false.B
     sdrc.io.axi.ar.get.bits.addr := 0.U
@@ -288,7 +288,7 @@ class M5StackHDMI(defaultVideoParams: VideoParams = PresetVideoParams.Default_12
     spiSlave.io.send.bits := 0.U
 
     val scalingX = 1
-    val scalingY = 2
+    val scalingY = 1
     reader.io.config.pixelsH := (defaultVideoParams.pixelsH / scalingX).U
     reader.io.config.pixelsV := (defaultVideoParams.pixelsV / scalingY).U
     reader.io.config.startX := 0.U
@@ -310,7 +310,7 @@ class M5StackHDMI(defaultVideoParams: VideoParams = PresetVideoParams.Default_12
   }
 
   withClockAndReset(io.videoClock, io.videoReset) {
-    val videoSignalGenerator = Module(new VideoSignalGenerator(defaultVideoParams, videoParams, maxMultiplierH = 16, maxMultiplierV = 16))
+    val videoSignalGenerator = Module(new VideoSignalGenerator(defaultVideoParams, maxVideoParams, maxMultiplierH = 2, maxMultiplierV = 2))
     val videoDataSlice = Module(new IrrevocableRegSlice(chiselTypeOf(fifo.io.read.bits)))
     videoDataSlice.io.in <> fifo.io.read
     videoSignalGenerator.io.data <> videoDataSlice.io.out
@@ -327,10 +327,12 @@ class M5StackHDMI(defaultVideoParams: VideoParams = PresetVideoParams.Default_12
   }
 
   // Debug probe
-  {
-    val probe = Module(new diag.Probe(new diag.ProbeConfig(bufferDepth = 1024, triggerPosition = 512), 8))
+  if( useProbe ){
+    val probe = Module(new diag.Probe(new diag.ProbeConfig(bufferDepth = 512, triggerPosition = 256), 36))
     probe.io.in := io.debugIn
     probe.io.trigger := io.debugIn(0)
+    // probe.io.trigger := reader.io.data.valid && reader.io.data.bits.pixelData =/= 0xffffff.U
+    // probe.io.in := Cat(0.U(8.W), reader.io.data.bits.pixelData, io.debugIn(3, 0))
     val probeFrameAdapter = Module(new diag.ProbeFrameAdapter(probe.width))
     probeFrameAdapter.io.in <> probe.io.out   // プローブの出力をフレームアダプタの入力に接続
     // UART送信モジュールを構築 (clockFreqHzにはクロック周波数が入っている)
@@ -340,6 +342,9 @@ class M5StackHDMI(defaultVideoParams: VideoParams = PresetVideoParams.Default_12
     probeUartTx.io.in <> probeFrameAdapter.io.out // フレームアダプタの出力をUART TXの入力に接続
     // UART信号出力をモジュールの probeOut ポートから出力
     io.probeOut := probeUartTx.io.tx
+  }
+  else {
+    io.probeOut := false.B
   }
 }
 

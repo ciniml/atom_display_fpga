@@ -2,7 +2,7 @@
 ipc_version=4
 file=dvi_rpll
 module=dvi_rpll
-target_device=gw1nr9-000
+target_device=gw1nr9c-000
 type=clock_rpll
 version=1.0
 

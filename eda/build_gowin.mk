@@ -23,10 +23,12 @@ PROJECT_ADDITIONAL_CLEAN ?=
 SCRIPT_DIR ?= ../../script
 PYTHON3 ?= python3
 
+GW_SH ?= gw_sh
+
 all: synthesis
 
 $(BITSTREAM): $(SRCS)
-	mkdir -p build/$(TARGET) && cd build/$(TARGET) && gw_sh ../../project.tcl $(SRC_DIR) $(RTL_DIR) $(TARGET) $(DEVICE_FAMILY) $(DEVICE_PART) $(PROJECT_NAME) $(IO_CONSTRAINT) $(PROJECT_ADDITIONAL_ARGS)
+	mkdir -p build/$(TARGET) && cd build/$(TARGET) && $(GW_SH) ../../project.tcl $(SRC_DIR) $(RTL_DIR) $(TARGET) $(DEVICE_FAMILY) $(DEVICE_PART) $(PROJECT_NAME) $(IO_CONSTRAINT) $(PROJECT_ADDITIONAL_ARGS)
 
 synthesis: $(BITSTREAM)
 
