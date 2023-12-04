@@ -310,7 +310,7 @@ class M5StackHDMI(defaultVideoParams: VideoParams = PresetVideoParams.Default_12
   }
 
   withClockAndReset(io.videoClock, io.videoReset) {
-    val videoSignalGenerator = Module(new VideoSignalGenerator(defaultVideoParams, maxVideoParams, maxMultiplierH = 2, maxMultiplierV = 2))
+    val videoSignalGenerator = Module(new VideoSignalGenerator(defaultVideoParams, maxVideoParams, maxMultiplierH = 16, maxMultiplierV = 16))
     val videoDataSlice = Module(new IrrevocableRegSlice(chiselTypeOf(fifo.io.read.bits)))
     videoDataSlice.io.in <> fifo.io.read
     videoSignalGenerator.io.data <> videoDataSlice.io.out

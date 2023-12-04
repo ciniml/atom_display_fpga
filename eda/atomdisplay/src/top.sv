@@ -128,8 +128,9 @@ module top (
 
     logic [35:0]  debugIn;
     logic        probeOut;
+    logic drainer_led_out;
 
-    assign HDMI_LED_B = led;
+    assign HDMI_LED_B = led | drainer_led_out;
     assign HDMI_LED_W = reset_n;
     assign HDMI_LED_B_ALT = led;
     assign HDMI_LED_W_ALT = reset_n;
@@ -465,6 +466,9 @@ module top (
         .O_sdrc_rd_valid(O_sdrc_rd_valid), //output O_sdrc_rd_valid
         .O_sdrc_wrd_ack(O_sdrc_wrd_ack) //output O_sdrc_wrd_ack
     );
+
+    // FF drainer to check the resource utilization problem.
+    //flipflop_drainer flipflop_drainer(.clk(clock), .out(drainer_led_out)); // Output the result of additions to a led so it does not get optimized out.
 
     // debug configuration
     // assign debugIn[0] = !I_sdrc_rd_n;

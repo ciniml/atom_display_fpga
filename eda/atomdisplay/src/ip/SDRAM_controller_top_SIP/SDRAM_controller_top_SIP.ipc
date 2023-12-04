@@ -7,7 +7,7 @@ type=sdrc_emb
 version=3.0
 
 [Config]
-IO_INSERTION=false
+IO_INSERTION=true
 LANG=0
 LOW_POWER=true
 Synthesis_tool=GowinSynthesis
