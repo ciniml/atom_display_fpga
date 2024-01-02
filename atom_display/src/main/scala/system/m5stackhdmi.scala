@@ -96,7 +96,9 @@ class M5StackHDMI(defaultVideoParams: VideoParams = PresetVideoParams.Default_12
   })
   
   // Configuration for the video multiplier
-  val videoMultiplierConfigType = new VideoMultiplicationConfig(16, 16)
+  val maxMultiplierH = 8
+  val maxMultiplierV = 8
+  val videoMultiplierConfigType = new VideoMultiplicationConfig(maxMultiplierH, maxMultiplierV)
   val videoMultiplierConfig = RegInit(WireInit(videoMultiplierConfigType.default()))
 
   // Frame trigger from Video 
@@ -310,7 +312,7 @@ class M5StackHDMI(defaultVideoParams: VideoParams = PresetVideoParams.Default_12
   }
 
   withClockAndReset(io.videoClock, io.videoReset) {
-    val videoSignalGenerator = Module(new VideoSignalGenerator(defaultVideoParams, maxVideoParams, maxMultiplierH = 16, maxMultiplierV = 16))
+    val videoSignalGenerator = Module(new VideoSignalGenerator(defaultVideoParams, maxVideoParams, maxMultiplierH = maxMultiplierH, maxMultiplierV = maxMultiplierV))
     val videoDataSlice = Module(new IrrevocableRegSlice(chiselTypeOf(fifo.io.read.bits)))
     videoDataSlice.io.in <> fifo.io.read
     videoSignalGenerator.io.data <> videoDataSlice.io.out

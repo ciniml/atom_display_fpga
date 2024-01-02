@@ -250,7 +250,7 @@ module top (
             is_m5display_lock <= 0;
         end
         else begin
-            is_m5display <= is_m5display_lock ? is_m5display : 1; //!IS_MODULE_DISPLAY_N;
+            is_m5display <= is_m5display_lock ? is_m5display : !IS_MODULE_DISPLAY_N;
             is_m5display_lock <= 1;
         end
     end
