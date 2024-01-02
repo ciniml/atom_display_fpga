@@ -29,11 +29,11 @@ module top (
     input wire CLK_IN_50M,
     
     // Video signals
-    output wire RGB_IDCK,
-    output wire RGB_DE,
-    output wire RGB_HSYNC,
-    output wire RGB_VSYNC,
-    output wire [23:0] RGB_OUT,
+    output logic RGB_IDCK,
+    output logic RGB_DE,
+    output logic RGB_HSYNC,
+    output logic RGB_VSYNC,
+    output logic [23:0] RGB_OUT,
 
     // Test LED
     output wire HDMI_LED_B,
@@ -71,14 +71,14 @@ module top (
 
     // Other signals
     input wire F_G12,
-    input wire F_G5,
+    output wire F_G5,
     input wire F_G15,
     input wire F_G0,    // pull-up, to determine AtomDisplay/M5Display L=M5
-    input wire F_G2,
-    input wire F_G16,
-    input wire F_G17,
-    input wire F_G25,
-    input wire F_G26
+    input wire F_G2
+    //input wire F_G16,
+    //input wire F_G17,
+    //input wire F_G25,
+    //input wire F_G26
 );
     // SDRAM Controller signals
     logic I_sdrc_rst_n;
@@ -98,9 +98,11 @@ module top (
     logic O_sdrc_rd_valid;
     logic O_sdrc_wrd_ack;
 
-    logic clock; /* synthesis syn_keep=1 */
-    logic clock_video;
-    //logic clock_video_x5;
+    logic clock;              /* synthesis syn_keep=1 */
+    logic clock_video;        /* synthesis syn_keep=1 */    // video signal clock.
+    logic clock_video_nondiv; /* synthesis syn_keep=1 */    // video clock generator output (non divided)
+    logic clock_video_half;                                 // video clock generator output (half)
+    
     logic reset_n;
     logic reset_video;
     logic [2:0] reset_video_sync = '1;
@@ -117,31 +119,58 @@ module top (
     logic trigger;
     logic processor_is_busy;
     logic [$clog2(74_250_000)-1:0] led_counter = 0;
-    logic data_enable; /* synthesis syn_keep=true */
 
     logic [15:0] video_clock_input_divider;
     logic [15:0] video_clock_output_divider;
     logic [15:0] video_clock_feedback_divider;
+    logic        video_clock_use_half_clock = 0;
     logic        video_clock_config_valid;
 
-    assign RGB_DE = data_enable;
+    logic [35:0]  debugIn;
+    logic        probeOut;
+    logic drainer_led_out;
 
-    assign HDMI_LED_B = led;
-    assign HDMI_LED_W = processor_is_busy;
+    assign HDMI_LED_B = led | drainer_led_out;
+    assign HDMI_LED_W = reset_n;
     assign HDMI_LED_B_ALT = led;
-    assign HDMI_LED_W_ALT = processor_is_busy;
-    assign SYS_LED_B = data_in_sync;    /* only available in ATOM Display */
+    assign HDMI_LED_W_ALT = reset_n;
+    assign SYS_LED_B = reset_n;    /* only available in ATOM Display */
 
-    assign RGB_IDCK = clock_video;
+    //assign RGB_IDCK = clock_video_nondiv;   // HDMI pixel clock is always PLL non-div output.
     logic [31:0] reset_reg = '1;
 
-    always_ff @(posedge clock_video) begin
-        if( led_counter < 'd74_250_000 ) begin
-            led_counter <= led_counter + 1;
-        end
-        else begin
+    IODELAY #(
+        .C_STATIC_DLY(0)
+    ) iodelay_idck (
+        .DI(clock_video_nondiv),
+        .SDTAP(0),
+        .SETN(0),
+        .VALUE(0),
+        .DO(RGB_IDCK),
+        .DF()
+    );
+
+    // always_ff @(posedge clock_video) begin
+    //     if( led_counter < 'd74_250_000 ) begin
+    //         led_counter <= led_counter + 1;
+    //     end
+    //     else begin
+    //         led_counter <= 0;
+    //         led <= !led;
+    //     end
+    // end
+    always_ff @(posedge clock) begin
+        if( !reset_n ) begin
             led_counter <= 0;
-            led <= !led;
+        end
+        else begin 
+            if( led_counter < 'd62_500_000 ) begin
+                led_counter <= led_counter + 1;
+            end
+            else begin
+                led_counter <= 0;
+                led <= !led;
+            end
         end
     end
 
@@ -164,9 +193,9 @@ module top (
     assign I_sdrc_rst_n = reset_n && lock_sdram;
 
     dvi_rpll dvi_rpll_i(
-        .clkout(clock_video),
+        .clkout(clock_video_nondiv),
         //.clkoutp(clock),
-        //.clkoutd(clock_video),
+        .clkoutd(clock_video_half),
         .lock(lock_video),
         .reset(dvi_rpll_reset),
         .clkin(CLK_IN_74M25), //input clkin
@@ -174,12 +203,6 @@ module top (
         .idsel(dvi_rpll_idsel), //input [5:0] idsel
         .odsel(dvi_rpll_odsel) //input [5:0] odsel
     );
-
-    // dvi_clkdiv dvi_clkdiv_i(
-    //     .clkout(clock_video), //output clkout
-    //     .hclkin(clock_video_x5), //input hclkin
-    //     .resetn(reset_n) //input resetn
-    // );
 
     assign lock_main = lock_sdram;
     //assign lock_sdram = 1;
@@ -193,9 +216,9 @@ module top (
 
     // Video clock configuration sequence.
     // assign dvi_rpll_reset = 0;
-    // assign dvi_rpll_fbdsel = 7'd64 - 7'd4;
-    // assign dvi_rpll_idsel = 7'd64 - 7'd4;
-    // assign dvi_rpll_odsel = 7'd64 - (7'd8 >> 1);
+    // assign dvi_rpll_fbdsel = 7'd64 - 7'd2;
+    // assign dvi_rpll_idsel = 7'd64 - 7'd1;
+    // assign dvi_rpll_odsel = 7'd64 - (7'd4 >> 1);
     always_ff @(posedge clock) begin
         if( !reset_n ) begin
             dvi_rpll_reset <= 1;
@@ -234,21 +257,136 @@ module top (
 
     // Swap pins for M5Display
     logic [23:0] video_data;
-    assign RGB_OUT[13:0] = video_data[13:0]; 
-    assign RGB_OUT[18] = is_m5display ? video_data[14] : video_data[18];
-    assign RGB_OUT[23] = is_m5display ? video_data[15] : video_data[23];
-    assign RGB_OUT[17] = is_m5display ? video_data[16] : video_data[17];
-    assign RGB_OUT[22] = is_m5display ? video_data[17] : video_data[22];
-    assign RGB_OUT[16] = is_m5display ? video_data[18] : video_data[16];
-    assign RGB_OUT[21] = is_m5display ? video_data[19] : video_data[21];
-    assign RGB_OUT[15] = is_m5display ? video_data[20] : video_data[15];
-    assign RGB_OUT[20] = is_m5display ? video_data[21] : video_data[20];
-    assign RGB_OUT[14] = is_m5display ? video_data[22] : video_data[14];
-    assign RGB_OUT[19] = is_m5display ? video_data[23] : video_data[19];
-
+    logic [23:0] video_data_sdr;
+    logic video_hsync_sdr;
+    logic video_vsync_sdr;
+    logic video_de; /* synthesis syn_keep=true */
+    logic video_de_sdr;
     logic video_hsync, video_vsync;
-    assign RGB_HSYNC = is_m5display ? video_vsync : video_hsync;
-    assign RGB_VSYNC = is_m5display ? video_hsync : video_vsync;
+
+    // assign video_data_sdr[13:0] = video_data[13:0]; 
+    // assign video_data_sdr[18] = is_m5display ? video_data[14] : video_data[18];
+    // assign video_data_sdr[23] = is_m5display ? video_data[15] : video_data[23];
+    // assign video_data_sdr[17] = is_m5display ? video_data[16] : video_data[17];
+    // assign video_data_sdr[22] = is_m5display ? video_data[17] : video_data[22];
+    // assign video_data_sdr[16] = is_m5display ? video_data[18] : video_data[16];
+    // assign video_data_sdr[21] = is_m5display ? video_data[19] : video_data[21];
+    // assign video_data_sdr[15] = is_m5display ? video_data[20] : video_data[15];
+    // assign video_data_sdr[20] = is_m5display ? video_data[21] : video_data[20];
+    // assign video_data_sdr[14] = is_m5display ? video_data[22] : video_data[14];
+    // assign video_data_sdr[19] = is_m5display ? video_data[23] : video_data[19];
+
+    // assign video_hsync_sdr = is_m5display ? video_vsync : video_hsync;
+    // assign video_vsync_sdr = is_m5display ? video_hsync : video_vsync;
+
+    always @(posedge clock_video) begin
+        video_data_sdr[13:0] <= video_data[13:0]; 
+        video_data_sdr[18] <= is_m5display ? video_data[14] : video_data[18];
+        video_data_sdr[23] <= is_m5display ? video_data[15] : video_data[23];
+        video_data_sdr[17] <= is_m5display ? video_data[16] : video_data[17];
+        video_data_sdr[22] <= is_m5display ? video_data[17] : video_data[22];
+        video_data_sdr[16] <= is_m5display ? video_data[18] : video_data[16];
+        video_data_sdr[21] <= is_m5display ? video_data[19] : video_data[21];
+        video_data_sdr[15] <= is_m5display ? video_data[20] : video_data[15];
+        video_data_sdr[20] <= is_m5display ? video_data[21] : video_data[20];
+        video_data_sdr[14] <= is_m5display ? video_data[22] : video_data[14];
+        video_data_sdr[19] <= is_m5display ? video_data[23] : video_data[19];
+
+        video_hsync_sdr <= is_m5display ? video_vsync : video_hsync;
+        video_vsync_sdr <= is_m5display ? video_hsync : video_vsync;
+        video_de_sdr <= video_de;
+    end
+    // generate
+    //     for(genvar i = 0; i < 24; i++) begin
+    //         logic rgb_out_reg = 0;
+    //         always @(posedge clock_video_nondiv) rgb_out_reg <= video_data_sdr[i];
+    //         OBUF obuf_video_data(
+    //             .O(RGB_OUT[i]),
+    //             .I(rgb_out_reg)
+    //         );
+    //     end
+    // endgenerate
+    // logic rgb_hsync_reg = 0;
+    // always @(posedge clock_video_nondiv) rgb_hsync_reg <= video_hsync_sdr;
+    // OBUF obuf_video_hsync(
+    //     .O(RGB_HSYNC),
+    //     .I(rgb_hsync_reg)
+    // );
+    // logic rgb_vsync_reg = 0;
+    // always @(posedge clock_video_nondiv) rgb_vsync_reg <= video_vsync_sdr;
+    // OBUF obuf_video_vsync(
+    //     .O(RGB_VSYNC),
+    //     .I(rgb_vsync_reg)
+    // );
+    // logic rgb_de_reg = 0;
+    // always @(posedge clock_video_nondiv) rgb_de_reg <= video_de_sdr;
+    // OBUF obuf_video_de(
+    //     .O(RGB_DE),
+    //     .I(rgb_de_reg)
+    // );
+    // always_ff @(posedge clock_video_nondiv) begin
+    //     RGB_OUT <= video_data_sdr;
+    //     RGB_HSYNC <= video_hsync_sdr;
+    //     RGB_VSYNC <= video_vsync_sdr;
+    //     RGB_DE <= video_de_sdr;
+    // end
+
+    generate
+        for(genvar i = 0; i < 24; i++) begin
+            ODDR video_data_ddr(
+                .Q0(RGB_OUT[i]),
+                .Q1(),
+                .D0(video_data_sdr[i]),
+                .D1(video_data_sdr[i]),
+                .TX(1),
+                .CLK(clock_video)
+            );
+        end
+        ODDR video_hsync_ddr(
+            .Q0(RGB_HSYNC),
+            .Q1(),
+            .D0(video_hsync_sdr),
+            .D1(video_hsync_sdr),
+            .TX(1),
+            .CLK(clock_video)
+        );
+        ODDR video_vsync_ddr(
+            .Q0(RGB_VSYNC),
+            .Q1(),
+            .D0(video_vsync_sdr),
+            .D1(video_vsync_sdr),
+            .TX(1),
+            .CLK(clock_video)
+        );
+        ODDR video_de_ddr(
+            .Q0(RGB_DE),
+            .Q1(),
+            .D0(video_de_sdr),
+            .D1(video_de_sdr),
+            .TX(1),
+            .CLK(clock_video)
+        );
+    endgenerate
+
+    logic [3:0] dvi_clock_select = 4'b0001;
+    always_ff @(posedge clock) begin
+        if( !reset_n ) begin
+            dvi_clock_select <= 4'b0001;
+        end
+        else begin
+            if( video_clock_config_valid ) begin
+                dvi_clock_select <= video_clock_use_half_clock ? 4'b0010 : 4'b0001;
+            end
+        end
+    end
+    dvi_dcs dvi_clock_select_inst(
+        .clkout(clock_video),
+        .clksel( dvi_clock_select ),  // clock select
+        .clk0(clock_video_nondiv),  // video non divided clock
+        .clk1(clock_video_half),    // video half clock
+        .clk2(0),
+        .clk3(0)
+    );
 
     logic io_spi_miso;
     IOBUF iobuf_spi_miso (
@@ -266,7 +404,7 @@ module top (
         .io_video_pixelData(video_data),
         .io_video_hSync(video_hsync),
         .io_video_vSync(video_vsync),
-        .io_video_dataEnable(data_enable),
+        .io_video_dataEnable(video_de),
         .io_dataInSync(data_in_sync),
         .io_sdrc_selfRefresh(I_sdrc_selfrefresh),
         .io_sdrc_powerDown(I_sdrc_power_down),
@@ -290,7 +428,10 @@ module top (
         .io_videoClockConfig_inputDivider(video_clock_input_divider),
         .io_videoClockConfig_outputDivider(video_clock_output_divider),
         .io_videoClockConfig_feedbackDivider(video_clock_feedback_divider),
+        .io_videoClockConfig_useHalfClock(video_clock_use_half_clock),
         .io_videoClockConfigValid(video_clock_config_valid),
+        .io_debugIn(debugIn),
+        .io_probeOut(probeOut),
         .*
     );
 
@@ -325,6 +466,28 @@ module top (
         .O_sdrc_rd_valid(O_sdrc_rd_valid), //output O_sdrc_rd_valid
         .O_sdrc_wrd_ack(O_sdrc_wrd_ack) //output O_sdrc_wrd_ack
     );
+
+    // FF drainer to check the resource utilization problem.
+    //flipflop_drainer flipflop_drainer(.clk(clock), .out(drainer_led_out)); // Output the result of additions to a led so it does not get optimized out.
+
+    // debug configuration
+    // assign debugIn[0] = !I_sdrc_rd_n;
+    // assign debugIn[1] = !I_sdrc_wr_n;
+    // assign debugIn[2] = !O_sdrc_busy_n;
+    // assign debugIn[3] = 0;
+    // assign debugIn[35:4] = I_sdrc_data; //I_sdrc_addr[3:0];
+    assign debugIn[0] = O_sdrc_rd_valid && O_sdrc_data != 32'hffffffff;
+    assign debugIn[1] = O_sdrc_wrd_ack;
+    assign debugIn[2] = !O_sdrc_busy_n;
+    assign debugIn[3] = 0;
+    assign debugIn[35:4] = O_sdrc_data;
+    // assign debugIn[0] = video_de;
+    // assign debugIn[1] = video_hsync;
+    // assign debugIn[2] = video_vsync;
+    // assign debugIn[3] = 0;
+    // assign debugIn[27:4] = video_data; //I_sdrc_addr[3:0];
+    // assign debugIn[35:28] = 0;
+    assign F_G5 = probeOut;
 endmodule
 
 `default_nettype wire
