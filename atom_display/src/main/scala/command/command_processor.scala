@@ -53,8 +53,8 @@ object VideoClockConfig {
     }
 }
 
-class CommandProcessor(videoParams: VideoParams, defaultVideoParams: VideoParams, axiParams: AXI4Params, enableCopyRect: Boolean) extends Module {
-    assert(videoParams.pixelBits == 24)
+class CommandProcessor(videoParams: VideoParams, defaultVideoParams: VideoParams, axiParams: AXI4Params, enableCopyRect: Boolean, skipFrameBufferInitialization: Boolean) extends Module {
+    assert(videoParams.pixelBits == 16 || videoParams.pixelBits == 24)
     assert(axiParams.dataBits == 32)
     
     object Commands {
@@ -101,8 +101,14 @@ class CommandProcessor(videoParams: VideoParams, defaultVideoParams: VideoParams
         val frameBufferConfig = Output(frameBufferConfigType)
         val videoConfig = Valid(videoConfigType)
         val videoClockConfig = Valid(VideoClockConfig())
+
+        val dbgCopyRect = Output(Bool())
     })
     
+    // Debug signals
+    val dbgCopyRect = RegInit(false.B)
+    io.dbgCopyRect := dbgCopyRect
+
     val spiDemux = Module(new IrrevocableUnsafeDemux(new SPIData(), 4))
     val spiSelect = RegInit(0.U)
     spiDemux.io.in <> io.data
@@ -130,11 +136,11 @@ class CommandProcessor(videoParams: VideoParams, defaultVideoParams: VideoParams
     val frameBufferReaderStreamIndex = pixelDataStreams - 1
     
     pixelDataMux.io.select := pixelDataSelect
-    //  index 1: RGB332 -> index 0: BGR888
+    //  index 1: RGB332 -> index 0: Native
     pixelDataMux.io.in(0).valid <> spiDemux.io.out(1).valid
     pixelDataMux.io.in(0).ready <> spiDemux.io.out(1).ready
-    pixelDataMux.io.in(0).bits  := RGB332ToBGR888(spiDemux.io.out(1).bits.data)
-    //  index 2: RGB565 -> index 1: BGR888
+    pixelDataMux.io.in(0).bits  := RGB332ToNative(spiDemux.io.out(1).bits.data)
+    //  index 2: RGB565 -> index 1: Native
     val pixelDataWidth8to16 = Module(WidthConverter(8, 16))
     pixelDataWidth8to16.io.enq.valid <> spiDemux.io.out(2).valid
     pixelDataWidth8to16.io.enq.ready <> spiDemux.io.out(2).ready
@@ -142,8 +148,8 @@ class CommandProcessor(videoParams: VideoParams, defaultVideoParams: VideoParams
     pixelDataWidth8to16.io.enq.bits.last := false.B
     pixelDataMux.io.in(1).valid <> pixelDataWidth8to16.io.deq.valid
     pixelDataMux.io.in(1).ready <> pixelDataWidth8to16.io.deq.ready
-    pixelDataMux.io.in(1).bits := RGB565ToBGR888(SwapByteOrder(pixelDataWidth8to16.io.deq.bits.data, 2))   // WidthConverter puts the bytes from LSB to MSB, so we have to swap bytes to restore RGB565 stream.
-    //  index 3: RGB888 -> index 2: BGR888
+    pixelDataMux.io.in(1).bits := RGB565ToNative(SwapByteOrder(pixelDataWidth8to16.io.deq.bits.data, 2))   // WidthConverter puts the bytes from LSB to MSB, so we have to swap bytes to restore RGB565 stream.
+    //  index 3: RGB888 -> index 2: Native
     val pixelDataWidth8to24 = Module(WidthConverter(8, 24))
     pixelDataWidth8to24.io.enq.valid <> spiDemux.io.out(3).valid
     pixelDataWidth8to24.io.enq.ready <> spiDemux.io.out(3).ready
@@ -151,8 +157,8 @@ class CommandProcessor(videoParams: VideoParams, defaultVideoParams: VideoParams
     pixelDataWidth8to24.io.enq.bits.last := false.B
     pixelDataMux.io.in(2).valid <> pixelDataWidth8to24.io.deq.valid
     pixelDataMux.io.in(2).ready <> pixelDataWidth8to24.io.deq.ready
-    pixelDataMux.io.in(2).bits := pixelDataWidth8to24.io.deq.bits.data  // WidthConverter puts the bytes from LSB to MSB, so R,G,B,R,... bytes stream is already converted to BGR888 stream.
-    //  Frame buffer reader -> index 3: BGR888
+    pixelDataMux.io.in(2).bits := RGB888ToNative(pixelDataWidth8to24.io.deq.bits.data)  // WidthConverter puts the bytes from LSB to MSB, so R,G,B,R,... bytes stream is already converted to BGR888 stream.
+    //  Frame buffer reader -> index 3: Native
     val readerDataQueue = Module(new PacketQueue(Flushable(io.readerData.bits.pixelData), 2048))
     readerDataQueue.io.write.valid := io.readerData.valid
     io.readerData.ready := readerDataQueue.io.write.ready
@@ -338,20 +344,50 @@ class CommandProcessor(videoParams: VideoParams, defaultVideoParams: VideoParams
     def RGB888ToBGR888(rgb888: UInt): UInt = {
         Cat(rgb888(7, 0), rgb888(15, 8), rgb888(23, 16))
     }
+    def RGB332ToRGB565(rgb332: UInt): UInt = {
+        Cat(rgb332(7, 5), rgb332(7, 6), rgb332(4, 2), rgb332(4, 2), rgb332(1, 0), rgb332(1, 0), rgb332(1))
+    }
+    def RGB888ToRGB565(rgb888: UInt): UInt = {
+        Cat(rgb888(23, 19), rgb888(15, 10), rgb888(7, 3))
+    }
+    
+    def RGB332ToNative(rgb332: UInt): UInt = {
+        videoParams.pixelBits match {
+            case 16 => RGB332ToRGB565(rgb332)
+            case 24 => RGB332ToBGR888(rgb332)
+        }
+    }
+    def RGB565ToNative(rgb565: UInt): UInt = {
+        videoParams.pixelBits match {
+            case 16 => rgb565
+            case 24 => RGB565ToBGR888(rgb565)
+        }
+    }
+    def RGB888ToNative(rgb888: UInt): UInt = {
+        videoParams.pixelBits match {
+            case 16 => RGB888ToRGB565(rgb888)
+            case 24 => RGB565ToBGR888(rgb888)
+        }
+    }
+
     def SwapByteOrder(value: UInt, bytes: Int): UInt = {
         Cat((0 to bytes-1).map(i => value(8*(i+1)-1, 8*i)))
     }
 
     switch( state ) {
         is(State.sClear) {
-            state := State.sClearWait
-            writerCommand.startX := 0.U
-            writerCommand.endXInclusive := (videoParams.pixelsH - 1).U
-            writerCommand.startY := 0.U
-            writerCommand.endYInclusive := (videoParams.pixelsV - 1).U
-            writerCommand.doFill := true.B
-            writerCommand.color := 0.U
-            writerCommandValid := true.B
+            if( !skipFrameBufferInitialization ) {
+                state := State.sClearWait
+                writerCommand.startX := 0.U
+                writerCommand.endXInclusive := (videoParams.pixelsH - 1).U
+                writerCommand.startY := 0.U
+                writerCommand.endYInclusive := (videoParams.pixelsV - 1).U
+                writerCommand.doFill := true.B
+                writerCommand.color := 0.U
+                writerCommandValid := true.B
+            } else {
+                state := State.sIdle
+            }
         }
         is(State.sClearWait) {
             when(writerIsBusyPrev && !io.writerIsBusy) {
@@ -374,6 +410,7 @@ class CommandProcessor(videoParams: VideoParams, defaultVideoParams: VideoParams
                 } .elsewhen( dataBody === Commands.CopyRect.U ) { // COPYRECT
                     paramsToFetch := 12.U
                     validCommand := true.B
+                    dbgCopyRect := true.B
                 } .elsewhen( dataBody === Commands.SetScreenScale.U ) { // SET_SCREEN_SCALE
                     paramsToFetch := 7.U    // [Scale X] [Scale Y] [Logical Width (2byte)] [Logical Height (2byte)] [Check Sum]
                     validCommand := true.B
@@ -543,7 +580,7 @@ class CommandProcessor(videoParams: VideoParams, defaultVideoParams: VideoParams
                             skipToFirst := true.B
                         } .otherwise {
                             state := State.sExecute
-                            val newColor = MuxLookup(command & 7.U, currentColor, Seq(0.U -> currentColor, 1.U -> RGB332ToBGR888(pixelFillColorRGB332), 2.U -> RGB565ToBGR888(pixelFillColorRGB565), 3.U -> RGB888ToBGR888(pixelFillColorRGB888)))
+                            val newColor = MuxLookup(command & 7.U, currentColor, Seq(0.U -> currentColor, 1.U -> RGB332ToNative(pixelFillColorRGB332), 2.U -> RGB565ToNative(pixelFillColorRGB565), 3.U -> RGB888ToNative(pixelFillColorRGB888)))
                             writerCommand.startX := xStart
                             writerCommand.endXInclusive := xStart
                             writerCommand.startY := yStart
@@ -560,7 +597,7 @@ class CommandProcessor(videoParams: VideoParams, defaultVideoParams: VideoParams
                             skipToFirst := true.B
                         } .otherwise {
                             state := State.sExecute
-                            val newColor = MuxLookup(command & 7.U, currentColor, Seq(0.U -> currentColor, 1.U -> RGB332ToBGR888(fillColorRGB332), 2.U -> RGB565ToBGR888(fillColorRGB565), 3.U -> RGB888ToBGR888(fillColorRGB888)))
+                            val newColor = MuxLookup(command & 7.U, currentColor, Seq(0.U -> currentColor, 1.U -> RGB332ToNative(fillColorRGB332), 2.U -> RGB565ToNative(fillColorRGB565), 3.U -> RGB888ToNative(fillColorRGB888)))
                             writerCommand.startX := xStart
                             writerCommand.endXInclusive := xEnd
                             writerCommand.startY := yStart

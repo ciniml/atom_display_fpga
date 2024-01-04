@@ -8,7 +8,7 @@ set IO_CONSTRAINT [lindex $argv 6]
 
 set_option -output_base_name ${PROJECT_NAME}
 set_device -name $DEVICE_FAMILY $DEVICE_PART
-set_device -name GW1NR-9C GW1NR-LV9QN88C6/I5
+#set_device -name GW1NR-9C GW1NR-LV9QN88C6/I5
 
 set_option -verilog_std sysv2017
 set_option -vhdl_std vhd2008

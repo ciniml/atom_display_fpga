@@ -5,7 +5,7 @@
 TARGET ?= atomdisplay
 BITSTREAM_RLE = ../eda/$(TARGET)/build/$(TARGET)/impl/pnr/$(TARGET).rle
 BITSTREAM_HEADER = ./libraries/M5GFX/src/lgfx/v1/panel/Panel_M5HDMI_FS.h
-MCU_TARGET ?= m5stack-grey
+MCU_TARGET ?= moduledisplay
 
 all: $(BITSTREAM_RLE)
 	cp $(BITSTREAM_RLE) fs_bitstream.rle

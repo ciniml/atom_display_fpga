@@ -256,6 +256,8 @@ module top (
     end
 
     // Swap pins for M5Display
+    localparam int BITS_PER_PIXEL = 16;
+    logic [BITS_PER_PIXEL-1:0] video_data_native;
     logic [23:0] video_data;
     logic [23:0] video_data_sdr;
     logic video_hsync_sdr;
@@ -263,6 +265,28 @@ module top (
     logic video_de; /* synthesis syn_keep=true */
     logic video_de_sdr;
     logic video_hsync, video_vsync;
+
+    generate
+        if( BITS_PER_PIXEL == 16 ) begin
+            logic [4:0] video_data_native_r;
+            logic [5:0] video_data_native_g;
+            logic [4:0] video_data_native_b;
+            logic [7:0] video_data_r;
+            logic [7:0] video_data_g;
+            logic [7:0] video_data_b;
+
+            assign video_data_native_r = video_data_native[15:11];
+            assign video_data_native_g = video_data_native[10:5];
+            assign video_data_native_b = video_data_native[4:0];
+            assign video_data_r = {video_data_native_r, video_data_native_r[4:2]};
+            assign video_data_g = {video_data_native_g, video_data_native_g[4:3]};
+            assign video_data_b = {video_data_native_b, video_data_native_b[4:2]};
+            assign video_data = {video_data_b, video_data_g, video_data_r};
+        end
+        else begin
+            assign video_data = video_data_native;
+        end
+    endgenerate
 
     // assign video_data_sdr[13:0] = video_data[13:0]; 
     // assign video_data_sdr[18] = is_m5display ? video_data[14] : video_data[18];
@@ -401,7 +425,7 @@ module top (
         .clock(clock),
         .io_videoClock(clock_video),
         .io_videoReset(reset_video),
-        .io_video_pixelData(video_data),
+        .io_video_pixelData(video_data_native),
         .io_video_hSync(video_hsync),
         .io_video_vSync(video_vsync),
         .io_video_dataEnable(video_de),
@@ -471,21 +495,29 @@ module top (
     //flipflop_drainer flipflop_drainer(.clk(clock), .out(drainer_led_out)); // Output the result of additions to a led so it does not get optimized out.
 
     // debug configuration
+    // cargo run -- --port /dev/ttyACM0 --signal I_sdrc_rd_n:1 --signal I_sdrc_wr_n:1 --signal O_sdrc_busy_n:1 --signal reserved:1 --signal I_sdrc_data:32 --csv output.csv
     // assign debugIn[0] = !I_sdrc_rd_n;
     // assign debugIn[1] = !I_sdrc_wr_n;
     // assign debugIn[2] = !O_sdrc_busy_n;
     // assign debugIn[3] = 0;
-    // assign debugIn[35:4] = I_sdrc_data; //I_sdrc_addr[3:0];
-    assign debugIn[0] = O_sdrc_rd_valid && O_sdrc_data != 32'hffffffff;
-    assign debugIn[1] = O_sdrc_wrd_ack;
+    // assign debugIn[35:4] = I_sdrc_data;
+    // cargo run -- --port /dev/ttyACM0 --signal I_sdrc_rd_n:1 --signal I_sdrc_wr_n:1 --signal O_sdrc_busy_n:1 --signal reserved:1 --signal I_sdrc_addr:32 --csv output.csv --count 1
+    assign debugIn[0] = !I_sdrc_rd_n;
+    assign debugIn[1] = !I_sdrc_wr_n;
     assign debugIn[2] = !O_sdrc_busy_n;
     assign debugIn[3] = 0;
-    assign debugIn[35:4] = O_sdrc_data;
+    assign debugIn[35:4] = I_sdrc_addr;
+    // assign debugIn[0] = O_sdrc_rd_valid && O_sdrc_data != 32'hffffffff;
+    // assign debugIn[1] = O_sdrc_wrd_ack;
+    // assign debugIn[2] = !O_sdrc_busy_n;
+    // assign debugIn[3] = 0;
+    // assign debugIn[35:4] = O_sdrc_data;
+    // cargo run -- --port /dev/ttyACM0 --signal video_de:1 --signal video_hsync:1 --signal video_vsync:1 --signal reserved:1 --signal video_data:24 --signal reserved:8 --csv output.csv
     // assign debugIn[0] = video_de;
     // assign debugIn[1] = video_hsync;
     // assign debugIn[2] = video_vsync;
     // assign debugIn[3] = 0;
-    // assign debugIn[27:4] = video_data; //I_sdrc_addr[3:0];
+    // assign debugIn[27:4] = video_data_native; //I_sdrc_addr[3:0];
     // assign debugIn[35:28] = 0;
     assign F_G5 = probeOut;
 endmodule

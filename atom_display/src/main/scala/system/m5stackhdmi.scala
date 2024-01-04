@@ -45,19 +45,20 @@ import spi.SPIData
 import spi.SPIIO
 
 object PresetVideoParams {
-  val Default_1280_720_60 = new VideoParams(24, 20, 720, 5, 5, 220, 1280, 110, 40)
-  val Default_1920_1080_30 = new VideoParams(24, 36, 1080, 4, 5, 148, 1920, 88, 44)
-  val Default_1920_1080_24 = new VideoParams(24, 36, 1080, 4, 5, 148, 1920, 638, 44)
-  val Generic_1024_768_60 = new VideoParams(24, 63, 768, 64, 5, 117, 1024, 117, 117)  // 351, 132
-  val TwiHai_480_1920_60 = new VideoParams(24, 20, 1920, 10, 5, 51, 480, 51, 51)
-  val Circular_480_480_60 = new VideoParams(24, 135, 480, 130, 5, 390, 480, 390, 390)
-  val LowPixelClock_640_480_60_CVT = new VideoParams(24, 13, 480, 3, 4, 80, 640, 16, 64)  // Pixel clock = 23.75, (actual clock is 23.625)
-  val LowPixelClock_640_480_60_CEA_861 = new VideoParams(24, 33, 480, 10, 2, 48, 640, 16, 96)  // Pixel clock = 25.175, (actual clock is 25.18)
-  val LowPixelClock_ARGlass_640_400_59p94 = new VideoParams(24, 32, 400, 87, 6, 58, 640, 96, 64)  // 640x400 59.94Hz at Pixel clock = 27.000
-  val Maximum = new VideoParams(24, 511, 2048, 511, 511, 511, 2048, 1023, 511) // Max counter size
+  val pixelBits = 16
+  val Default_1280_720_60 = new VideoParams(pixelBits, 20, 720, 5, 5, 220, 1280, 110, 40)
+  val Default_1920_1080_30 = new VideoParams(pixelBits, 36, 1080, 4, 5, 148, 1920, 88, 44)
+  val Default_1920_1080_24 = new VideoParams(pixelBits, 36, 1080, 4, 5, 148, 1920, 638, 44)
+  val Generic_1024_768_60 = new VideoParams(pixelBits, 63, 768, 64, 5, 117, 1024, 117, 117)  // 351, 132
+  val TwiHai_480_1920_60 = new VideoParams(pixelBits, 20, 1920, 10, 5, 51, 480, 51, 51)
+  val Circular_480_480_60 = new VideoParams(pixelBits, 135, 480, 130, 5, 390, 480, 390, 390)
+  val LowPixelClock_640_480_60_CVT = new VideoParams(pixelBits, 13, 480, 3, 4, 80, 640, 16, 64)  // Pixel clock = 23.75, (actual clock is 23.625)
+  val LowPixelClock_640_480_60_CEA_861 = new VideoParams(pixelBits, 33, 480, 10, 2, 48, 640, 16, 96)  // Pixel clock = 25.175, (actual clock is 25.18)
+  val LowPixelClock_ARGlass_640_400_59p94 = new VideoParams(pixelBits, 32, 400, 87, 6, 58, 640, 96, 64)  // 640x400 59.94Hz at Pixel clock = 27.000
+  val Maximum = new VideoParams(pixelBits, 511, 2048, 511, 511, 511, 2048, 1023, 511) // Max counter size
 
   // Some special cases
-  val XrealAir_960_540_60 = new VideoParams(24, 36, 1080, 4, 5, 148/2, 1920/2, 88/2, 44/2)
+  val XrealAir_960_540_60 = new VideoParams(pixelBits, 36, 1080, 4, 5, 148/2, 1920/2, 88/2, 44/2)
 }
 
 object PresetVideoClocks {
@@ -70,12 +71,12 @@ object PresetVideoClocks {
 }
 
 @chiselName
-class M5StackHDMI(defaultVideoParams: VideoParams = PresetVideoParams.Default_1280_720_60, useProbe: Boolean = false) extends Module {
+class M5StackHDMI(defaultVideoParams: VideoParams = PresetVideoParams.Default_1280_720_60, useProbe: Boolean = true, skipFrameBufferInitialization: Boolean = false, disableDebugMessage: Boolean = false) extends Module {
   val maxVideoParams = PresetVideoParams.Maximum
   val videoConfigType = VideoConfig(maxVideoParams)
   val fullPageBurstLength = 256 * 2 / 4 // 256 [columns/row] * 2 [bytes/column] / 4 [bytes/address] (full page burst)
   val maxBurstPixels = 160 //(fullPageBurstLength * 4 / 12) * 4
-  val maxBurstLength = maxBurstPixels * 3 / 4
+  val maxBurstLength = maxBurstPixels * defaultVideoParams.pixelBytes / 4
   val reader = Module(new FrameBufferReader(maxVideoParams.pixelBits, maxVideoParams.pixelsH, maxVideoParams.pixelsV, 32, maxBurstLength))
   val sdramParams = new SDRAMBridgeParams(reader.axiParams.addressBits - 2, 4, maxBurstLength)
 
@@ -95,6 +96,9 @@ class M5StackHDMI(defaultVideoParams: VideoParams = PresetVideoParams.Default_12
     val probeOut = Output(Bool())
   })
   
+  // Debug signals
+  val dbgCopyRect = WireDefault(false.B)
+
   // Configuration for the video multiplier
   val maxMultiplierH = 8
   val maxMultiplierV = 8
@@ -112,7 +116,7 @@ class M5StackHDMI(defaultVideoParams: VideoParams = PresetVideoParams.Default_12
   val vActiveFromVideo = Wire(Bool())
   val vActive = RegNext(RegNext(vActiveFromVideo, false.B), false.B)
 
-  val sdrc = Module(new SDRCBridge(sdramParams)) 
+  val sdrc = Module(new SDRCBridge(sdramParams, disableDebugMessage = disableDebugMessage)) 
   val fifo = Module(new AsyncFIFO(new VideoSignal(maxVideoParams.pixelBits), 12)) // 2^12 = 4096 [pixels] depth FIFO
   reader.io.trigger := trigger
   io.sdrc <> sdrc.io.sdrc
@@ -125,7 +129,7 @@ class M5StackHDMI(defaultVideoParams: VideoParams = PresetVideoParams.Default_12
   val useTestPattern = false       // Write test pattern to SDRAM, then read it by FrameBufferReader.
   val useTestPatternDirect = false  // Test pattern generator directly connected to async FIFO. not using SDRC, FrameBufferReader.
   val useSimpleWriter = false
-  val enableCopyRect = false
+  val enableCopyRect = true
 
   io.spi <> spiSlave.io.spi
 
@@ -192,7 +196,7 @@ class M5StackHDMI(defaultVideoParams: VideoParams = PresetVideoParams.Default_12
     val processorVideoParams = new VideoParams(maxVideoParams.pixelBits, maxVideoParams.backPorchV, maxVideoParams.pixelsV * 2, maxVideoParams.frontPorchV, maxVideoParams.pulseWidthV, maxVideoParams.backPorchH, maxVideoParams.pixelsH, maxVideoParams.frontPorchH, maxVideoParams.pulseWidthH)
     val readerParams = AXI4Params(sdrc.axi4Params.addressBits, sdrc.axi4Params.dataBits, AXI4ReadOnly, sdrc.axi4Params.maxBurstLength)
     val writerParams = AXI4Params(sdrc.axi4Params.addressBits, sdrc.axi4Params.dataBits, AXI4WriteOnly, sdrc.axi4Params.maxBurstLength)
-    val processor = Module(new CommandProcessor(processorVideoParams, defaultVideoParams, sdrc.axi4Params, enableCopyRect))
+    val processor = Module(new CommandProcessor(processorVideoParams, defaultVideoParams, sdrc.axi4Params, enableCopyRect, skipFrameBufferInitialization = skipFrameBufferInitialization))
     val streamReader = if(enableCopyRect) { Some(Module(new StreamReader(processorVideoParams, readerParams, 8))) } else { None }
     val streamWriter = Module(new StreamWriter(processorVideoParams, writerParams, 8))
     
@@ -207,6 +211,8 @@ class M5StackHDMI(defaultVideoParams: VideoParams = PresetVideoParams.Default_12
     } else {
       sdrc.io.axi <> WithAXI4RegSlice(AXIChannelCombine(reader.io.mem, WithAXI4Gate(streamWriter.io.axi, enableFrameBufferAccess)))
     }
+
+    dbgCopyRect := processor.io.dbgCopyRect
 
     val spiSlaveData = Wire(Irrevocable(new SPIData))
     spiSlaveData <> Queue(spiSlave.io.receive, 2048)
