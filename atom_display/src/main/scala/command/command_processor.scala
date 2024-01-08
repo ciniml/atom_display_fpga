@@ -157,7 +157,7 @@ class CommandProcessor(videoParams: VideoParams, defaultVideoParams: VideoParams
     pixelDataWidth8to24.io.enq.bits.last := false.B
     pixelDataMux.io.in(2).valid <> pixelDataWidth8to24.io.deq.valid
     pixelDataMux.io.in(2).ready <> pixelDataWidth8to24.io.deq.ready
-    pixelDataMux.io.in(2).bits := RGB888ToNative(pixelDataWidth8to24.io.deq.bits.data)  // WidthConverter puts the bytes from LSB to MSB, so R,G,B,R,... bytes stream is already converted to BGR888 stream.
+    pixelDataMux.io.in(2).bits := RGB888ToNative(SwapByteOrder(pixelDataWidth8to24.io.deq.bits.data, 3))  // WidthConverter puts the bytes from LSB to MSB, so R,G,B,R,... bytes stream is already converted to BGR888 stream.
     //  Frame buffer reader -> index 3: Native
     val readerDataQueue = Module(new PacketQueue(Flushable(io.readerData.bits.pixelData), 2048))
     readerDataQueue.io.write.valid := io.readerData.valid
