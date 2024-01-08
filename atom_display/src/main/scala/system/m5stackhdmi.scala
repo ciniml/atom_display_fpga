@@ -71,7 +71,7 @@ object PresetVideoClocks {
 }
 
 @chiselName
-class M5StackHDMI(defaultVideoParams: VideoParams = PresetVideoParams.Default_1280_720_60, useProbe: Boolean = true, skipFrameBufferInitialization: Boolean = false, disableDebugMessage: Boolean = false) extends Module {
+class M5StackHDMI(defaultVideoParams: VideoParams = PresetVideoParams.Default_1280_720_60, useProbe: Boolean = false, skipFrameBufferInitialization: Boolean = false, disableDebugMessage: Boolean = false) extends Module {
   val maxVideoParams = PresetVideoParams.Maximum
   val videoConfigType = VideoConfig(maxVideoParams)
   val fullPageBurstLength = 256 * 2 / 4 // 256 [columns/row] * 2 [bytes/column] / 4 [bytes/address] (full page burst)
@@ -196,6 +196,7 @@ class M5StackHDMI(defaultVideoParams: VideoParams = PresetVideoParams.Default_12
     val processorVideoParams = new VideoParams(maxVideoParams.pixelBits, maxVideoParams.backPorchV, maxVideoParams.pixelsV * 2, maxVideoParams.frontPorchV, maxVideoParams.pulseWidthV, maxVideoParams.backPorchH, maxVideoParams.pixelsH, maxVideoParams.frontPorchH, maxVideoParams.pulseWidthH)
     val readerParams = AXI4Params(sdrc.axi4Params.addressBits, sdrc.axi4Params.dataBits, AXI4ReadOnly, sdrc.axi4Params.maxBurstLength)
     val writerParams = AXI4Params(sdrc.axi4Params.addressBits, sdrc.axi4Params.dataBits, AXI4WriteOnly, sdrc.axi4Params.maxBurstLength)
+    val demuxParams = AXI4Params(sdrc.axi4Params.addressBits, sdrc.axi4Params.dataBits, AXI4ReadWrite, sdrc.axi4Params.maxBurstLength)
     val processor = Module(new CommandProcessor(processorVideoParams, defaultVideoParams, sdrc.axi4Params, enableCopyRect, skipFrameBufferInitialization = skipFrameBufferInitialization))
     val streamReader = if(enableCopyRect) { Some(Module(new StreamReader(processorVideoParams, readerParams, 8))) } else { None }
     val streamWriter = Module(new StreamWriter(processorVideoParams, writerParams, 8))
@@ -204,10 +205,11 @@ class M5StackHDMI(defaultVideoParams: VideoParams = PresetVideoParams.Default_12
     val enableFrameBufferAccess = !reader.io.active || RegNext(fifo.io.writeHalfFull, false.B)  // Enable frame buffer access if frame buffer reader is inactive and/or the FIFO has enough data.
     
     if( enableCopyRect ) {
-      val demux = Module(new AXI4Demux(readerParams, 2))
+      val demux = Module(new AXI4PriorityDemux(demuxParams, Seq(AXI4ReadOnly, AXI4WriteOnly, AXI4ReadOnly)))
       demux.io.in(0) <> reader.io.mem
-      demux.io.in(1) <> WithAXI4Gate(streamReader.get.io.axi, enableFrameBufferAccess)
-      sdrc.io.axi <> WithAXI4RegSlice(AXIChannelCombine(demux.io.out, WithAXI4Gate(streamWriter.io.axi, enableFrameBufferAccess)))
+      demux.io.in(1) <> WithAXI4Gate(streamWriter.io.axi, enableFrameBufferAccess)
+      demux.io.in(2) <> WithAXI4Gate(streamReader.get.io.axi, enableFrameBufferAccess)
+      sdrc.io.axi <> WithAXI4RegSlice(demux.io.out)
     } else {
       sdrc.io.axi <> WithAXI4RegSlice(AXIChannelCombine(reader.io.mem, WithAXI4Gate(streamWriter.io.axi, enableFrameBufferAccess)))
     }
