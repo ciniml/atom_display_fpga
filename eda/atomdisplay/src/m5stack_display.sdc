@@ -25,8 +25,9 @@
 
 # Main clocks
 create_clock -name CLK_IN_50M -period 20.0 -waveform {0 10.0} [get_ports {CLK_IN_50M}]
-create_generated_clock -name clock_main -source [get_ports {CLK_IN_50M}] -master_clock CLK_IN_50M -divide_by 20 -multiply_by 25 [get_nets {clock}]
+#create_generated_clock -name clock_main -source [get_ports {CLK_IN_50M}] -master_clock CLK_IN_50M -divide_by 20 -multiply_by 25 [get_nets {clock}]
 #create_generated_clock -name clock_main -source [get_ports {CLK_IN_50M}] -master_clock CLK_IN_50M -divide_by 5 -multiply_by 7 [get_nets {clock}]
+create_generated_clock -name clock_main -source [get_ports {CLK_IN_50M}] -master_clock CLK_IN_50M -divide_by 10 -multiply_by 13 [get_nets {clock}]
 #create_generated_clock -name clock_main -source [get_ports {CLK_IN_50M}] -master_clock CLK_IN_50M -divide_by 5 -multiply_by 8 [get_nets {clock}]
 
 # Video clocks
