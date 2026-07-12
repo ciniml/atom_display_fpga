@@ -239,7 +239,24 @@ BRAM 化したため)だが上限内。
 
 ---
 
-## 8. 残タスク
+## 8. リソース最適化(合成後)
 
-- **実機確認**: 生成した `.fs` を実機に書き込んで動作確認(要ハードウェア + プログラマ接続)。
-  書き込みは既存の `make run` / `make deploy` フロー(programmer_cli / openFPGALoader)が利用可能。
+初回合成後の見直しで BSRAM を削減:
+
+- **line_reader の R チャネル FIFO 深さ**: Chisel 踏襲の 2048 は過大。valid/ready
+  バックプレッシャーがデータを落とさないため深さはスループットにのみ影響し、発行制御
+  (issued_data_words_remaining)により滞留は高々 1〜2 バースト。パラメータ化(RFifoDepthBits)
+  して 512 に低減。StreamReader / FrameBufferReader の 2 インスタンス分で **BSRAM を 6 個削減**
+  (21 → 15、Chisel 版 14 個にほぼ一致)。実機(720p 全画面)で表示正常を確認。
+- sdrc_bridge の AR/AW/B(2 エントリ)を sync_fifo から irrevocable_reg_slice に置換
+  (2 エントリの sync_fifo は BRAM を使わないため BSRAM 削減効果はなかったが、FF が僅かに減少)。
+
+最適化後: BSRAM 15/26(58%)、LUT 3106、Register 3962、CLS 84%、
+clock_main 71.2MHz(全クロック制約達成を維持)。
+
+## 9. 残タスク
+
+- さらなる BSRAM 削減余地: async_fifo(4096)、packet_queue / SPI 受信キュー(各 2048)、
+  VSG ラインバッファ(2048)。ただし機能上の必要深さの検証が要る。
+- Chisel 版とのサイクル一致(ロックステップ)等価性検証。
+- フルサイズ(2048px 幅 / 720p)でのシミュレーション。

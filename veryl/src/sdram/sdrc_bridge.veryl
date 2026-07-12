@@ -47,14 +47,15 @@ pub module sdrc_bridge::<
     var w_count: logic<DATA_FIFO_BITS + 1>;
     var r_count: logic<DATA_FIFO_BITS + 1>;
 
-    inst u_fifo_ar: sync_fifo::<axi4_pkg::Axi4A::<AxiAddressBits>> #(
-        DepthBits: 1,
-    ) (
-        i_clk  : i_clk ,
-        i_rst  : i_rst ,
-        i_data : ar_enq,
-        o_data : ar_mid,
-        o_count: _     ,
+    // AR/AW/B use register-slice buffers (2 entries each) instead of
+    // sync_fifo: a 2-entry sync_fifo would infer a whole block RAM,
+    // whereas these fit in flip-flops. The Chisel original used
+    // Queue(2) + RegSlice for AR/AW; two register slices are equivalent.
+    inst u_fifo_ar: irrevocable_reg_slice::<axi4_pkg::Axi4A::<AxiAddressBits>> (
+        i_clk : i_clk ,
+        i_rst : i_rst ,
+        i_data: ar_enq,
+        o_data: ar_mid,
     );
     inst u_ar_slice: irrevocable_reg_slice::<axi4_pkg::Axi4A::<AxiAddressBits>> (
         i_clk : i_clk ,
@@ -63,14 +64,11 @@ pub module sdrc_bridge::<
         o_data: ar_deq,
     );
 
-    inst u_fifo_aw: sync_fifo::<axi4_pkg::Axi4A::<AxiAddressBits>> #(
-        DepthBits: 1,
-    ) (
-        i_clk  : i_clk ,
-        i_rst  : i_rst ,
-        i_data : aw_enq,
-        o_data : aw_mid,
-        o_count: _     ,
+    inst u_fifo_aw: irrevocable_reg_slice::<axi4_pkg::Axi4A::<AxiAddressBits>> (
+        i_clk : i_clk ,
+        i_rst : i_rst ,
+        i_data: aw_enq,
+        o_data: aw_mid,
     );
     inst u_aw_slice: irrevocable_reg_slice::<axi4_pkg::Axi4A::<AxiAddressBits>> (
         i_clk : i_clk ,
@@ -99,14 +97,11 @@ pub module sdrc_bridge::<
         o_count: r_count,
     );
 
-    inst u_fifo_b: sync_fifo::<axi4_pkg::Axi4B> #(
-        DepthBits: 1,
-    ) (
-        i_clk  : i_clk,
-        i_rst  : i_rst,
-        i_data : b_enq,
-        o_data : b_deq,
-        o_count: _    ,
+    inst u_fifo_b: irrevocable_reg_slice::<axi4_pkg::Axi4B> (
+        i_clk : i_clk,
+        i_rst : i_rst,
+        i_data: b_enq,
+        o_data: b_deq,
     );
 
     // AXI side wiring

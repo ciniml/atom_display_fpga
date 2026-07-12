@@ -11,7 +11,14 @@
 // stream_if: nested generics (LineReaderCommand::<A, W>) are not
 // accepted as interface generic args at port positions, and opaque
 // type parameters do not allow member access.
-pub module line_reader::<AddressBits: u32, MaxWidth: u32, BurstPixels: u32, MaxBurstLength: u32> (
+pub module line_reader::<AddressBits: u32, MaxWidth: u32, BurstPixels: u32, MaxBurstLength: u32> #(
+    // R-channel FIFO depth. The Chisel original used 2048; because the
+    // valid/ready backpressure never drops data, the depth only affects
+    // read throughput, and the issue control (issued_data_words_remaining)
+    // keeps at most a burst or two in flight, so a smaller RAM suffices.
+    // 512 x 35 bit still fits in one block RAM per instance.
+    param RFifoDepthBits: u32 = 9,
+) (
     i_clk          : input   clock                                                ,
     i_rst          : input   reset                                                ,
     i_command_valid: input   logic                                                ,
@@ -87,7 +94,7 @@ pub module line_reader::<AddressBits: u32, MaxWidth: u32, BurstPixels: u32, MaxB
     inst r_deq: stream_if::<axi4_pkg::Axi4R::<32>>;
 
     inst u_r_fifo: sync_fifo::<axi4_pkg::Axi4R::<32>> #(
-        DepthBits: 11,
+        DepthBits: RFifoDepthBits,
     ) (
         i_clk  : i_clk,
         i_rst  : i_rst,
