@@ -1,0 +1,21 @@
+// Unit test for stream_if (util/stream_if.veryl)
+// SPDX-License-Identifier: BSL-1.0
+
+#[test(test_stream_if)]
+module test_stream_if {
+    inst s: stream_if::<stream_test_pkg::byte_t>;
+
+    initial {
+        s.valid   = 1'b0;
+        s.ready   = 1'b0;
+        s.payload = 8'h00;
+        $assert  (s.fire() == 1'b0);
+        s.valid   = 1'b1;
+        s.payload = 8'ha5;
+        $assert  (s.fire() == 1'b0);
+        s.ready   = 1'b1;
+        $assert  (s.fire() == 1'b1);
+        $assert  (s.payload == 8'ha5);
+        $finish  ();
+    }
+}

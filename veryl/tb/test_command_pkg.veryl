@@ -1,0 +1,20 @@
+// Unit test for command_pkg (command/command_pkg.veryl)
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+#[test(test_command_pkg)]
+module test_command_pkg {
+    var cfg: command_pkg::VideoClockConfig;
+
+    initial {
+        $assert($bits(command_pkg::VideoClockConfig) == 49);
+        cfg     = command_pkg::video_clock_config_default();
+        $assert(cfg.input_divider == 16'd4);
+        $assert(cfg.output_divider == 16'd8);
+        $assert(cfg.feedback_divider == 16'd4);
+        $assert(cfg.use_half_clock == 1'b0);
+        cfg     = command_pkg::video_clock_config_74m25();
+        $assert(cfg.input_divider == 16'd1);
+        $assert(cfg.feedback_divider == 16'd1);
+        $finish();
+    }
+}

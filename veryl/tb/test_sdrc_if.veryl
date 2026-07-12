@@ -1,0 +1,21 @@
+// Unit test for sdrc_if (sdram/sdrc_if.veryl)
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+#[test(test_sdrc_if)]
+#[allow(unassign_variable)]
+module test_sdrc_if {
+    // Same parameters as the actual design:
+    // addressBits = 21, dataBytes = 4, maxBurstLength = 80
+    inst sdrc: sdrc_if::<21, 4, 80>;
+
+    initial {
+        $assert  ($bits(sdrc.data_read) == 32);
+        $assert  ($bits(sdrc.data_write) == 32);
+        $assert  ($bits(sdrc.data_len) == 7);
+        sdrc.wr_n = 1'b1;
+        sdrc.rd_n = 1'b0;
+        sdrc.addr = 21'h1fffff;
+        $assert  (sdrc.addr == 21'h1fffff);
+        $finish  ();
+    }
+}

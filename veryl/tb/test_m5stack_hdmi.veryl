@@ -1,0 +1,244 @@
+// System test for m5stack_hdmi_core: the full pipeline from SPI command
+// bytes through the command processor, stream writer, AXI arbitration
+// and SDRC bridge into the (simulated) SDRAM frame buffer, and back out
+// through the frame buffer reader, async FIFO and video signal
+// generator in a separate video clock domain.
+//
+// Small configuration: 64x32 frame buffer (stride 64px), 16x8 visible
+// window, video timing H = 2+2+16+2 = 22, V = 1+2+8+1 = 12 lines.
+// The main clock runs at 3x the video clock (the SDRC read latency
+// requires headroom like on the real hardware).
+//
+// Scenario: wait for the automatic frame buffer clear, FILL_RECT the
+// whole 16x8 screen red, FILL_RECT a green 4x2 rectangle inside it,
+// then capture one full video frame and verify every DE pixel.
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+#[test(test_m5stack_hdmi)]
+#[allow(unassign_variable)]
+module test_m5stack_hdmi {
+    inst clk : $tb::clock_gen;
+    inst rst: $tb::reset_gen (
+        clk: clk,
+    );
+    inst vclk: $tb::clock_gen;
+    inst vrst: $tb::reset_gen (
+        clk: vclk,
+    );
+
+    inst spi_rx: stream_if::<spi_pkg::SpiData>;
+    inst spi_tx: stream_if::<spi_pkg::SpiByte>;
+    inst sdrc  : sdrc_if::<11, 4, 16>;
+
+    var video         : video_pkg::VideoIO           ;
+    var data_in_sync  : logic                        ;
+    var trigger       : logic                        ;
+    var proc_busy     : logic                        ;
+    var vclk_cfg_valid: logic                        ;
+    var vclk_cfg      : command_pkg::VideoClockConfig;
+    var dbg_copy_rect : logic                        ;
+
+    inst dut: m5stack_hdmi_core::<13, 11, 64, 32, 64, 16, 8, 8> #(
+        DefaultBackPorchV : 2 ,
+        DefaultPixelsV    : 8 ,
+        DefaultFrontPorchV: 1 ,
+        DefaultPulseWidthV: 1 ,
+        DefaultBackPorchH : 2 ,
+        DefaultPixelsH    : 16,
+        DefaultFrontPorchH: 2 ,
+        DefaultPulseWidthH: 2 ,
+    ) (
+        i_clk                     : clk           ,
+        i_rst                     : rst           ,
+        i_video_clk               : vclk          ,
+        i_video_rst               : vrst          ,
+        i_spi_receive             : spi_rx        ,
+        o_spi_send                : spi_tx        ,
+        o_video                   : video         ,
+        o_data_in_sync            : data_in_sync  ,
+        o_trigger                 : trigger       ,
+        o_processor_is_busy       : proc_busy     ,
+        sdrc                      : sdrc          ,
+        o_video_clock_config_valid: vclk_cfg_valid,
+        o_video_clock_config      : vclk_cfg      ,
+        o_dbg_copy_rect           : dbg_copy_rect ,
+    );
+
+    inst memory: tb_sim_sdrc::<11, 4, 32, 16> #(
+        MemWords: 2048,
+    ) (
+        i_clk: clk ,
+        i_rst: rst ,
+        sdrc : sdrc,
+    );
+
+    var byte_to_send: logic<8> ;
+    var first_flag  : logic    ;
+    var de_count    : u32      ;
+    var x           : u32      ;
+    var y           : u32      ;
+    var expected    : logic<16>;
+    var seen_vsync  : logic    ;
+    var frame_done  : logic    ;
+
+    initial {
+        spi_rx.valid         = '0;
+        spi_rx.payload.first = '0;
+        spi_rx.payload.data  = '0;
+        spi_tx.ready         = '1;
+        rst.assert          (clk);
+        vrst.assert         (vclk);
+        clk.next            (4);
+        vclk.next           (2);
+
+        // ---- Wait for the automatic frame buffer clear (64x64 fill) ----
+        // Tick pattern everywhere: 1 video cycle : 3 main cycles.
+        for _i in 0..30000 {
+            vclk.next(1);
+            clk.next (3);
+            if !proc_busy {
+                break;
+            }
+        }
+        $assert (!proc_busy, "frame buffer clear must finish");
+        $display("clear done");
+
+        // ---- FILL_RECT: whole 16x8 screen red (0xf800) ----
+        first_flag = '1;
+        for k in 0..11 {
+            case k {
+                0      : byte_to_send = 8'h6a; // FILL_RECT | RGB565
+                1      : byte_to_send = 8'h00;
+                2      : byte_to_send = 8'h00; // x start = 0
+                3      : byte_to_send = 8'h00;
+                4      : byte_to_send = 8'h00; // y start = 0
+                5      : byte_to_send = 8'h00;
+                6      : byte_to_send = 8'd15; // x end = 15
+                7      : byte_to_send = 8'h00;
+                8      : byte_to_send = 8'd7; // y end = 7
+                9      : byte_to_send = 8'hf8; // color hi
+                default: byte_to_send = 8'h00; // color lo
+            }
+            spi_rx.valid         = '1;
+            spi_rx.payload.first = first_flag;
+            spi_rx.payload.data  = byte_to_send;
+            first_flag           = '0;
+            for _i in 0..50 {
+                if spi_rx.ready {
+                    break;
+                }
+                vclk.next(1);
+                clk.next (3);
+            }
+            $assert     (spi_rx.ready, "SPI byte must be accepted");
+            clk.next    (1);
+            spi_rx.valid = '0;
+            vclk.next   (2);
+            clk.next    (6);
+        }
+        for _i in 0..20000 {
+            vclk.next(1);
+            clk.next (3);
+            if !proc_busy {
+                break;
+            }
+        }
+        $assert (!proc_busy, "red fill must finish");
+        $display("red fill done");
+
+        // ---- FILL_RECT: green (0x07e0) rectangle x=4..7, y=2..3 ----
+        first_flag = '1;
+        for k in 0..11 {
+            case k {
+                0      : byte_to_send = 8'h6a;
+                1      : byte_to_send = 8'h00;
+                2      : byte_to_send = 8'd4; // x start
+                3      : byte_to_send = 8'h00;
+                4      : byte_to_send = 8'd2; // y start
+                5      : byte_to_send = 8'h00;
+                6      : byte_to_send = 8'd7; // x end
+                7      : byte_to_send = 8'h00;
+                8      : byte_to_send = 8'd3; // y end
+                9      : byte_to_send = 8'h07; // color hi
+                default: byte_to_send = 8'he0; // color lo
+            }
+            spi_rx.valid         = '1;
+            spi_rx.payload.first = first_flag;
+            spi_rx.payload.data  = byte_to_send;
+            first_flag           = '0;
+            for _i in 0..50 {
+                if spi_rx.ready {
+                    break;
+                }
+                vclk.next(1);
+                clk.next (3);
+            }
+            clk.next    (1);
+            spi_rx.valid = '0;
+            vclk.next   (2);
+            clk.next    (6);
+        }
+        for _i in 0..20000 {
+            vclk.next(1);
+            clk.next (3);
+            if !proc_busy {
+                break;
+            }
+        }
+        $assert (!proc_busy, "green fill must finish");
+        $display("green fill done");
+
+        // ---- Let the video pipeline settle (a few frames) ----
+        for _i in 0..2000 {
+            vclk.next(1);
+            clk.next (3);
+            if data_in_sync {
+                break;
+            }
+        }
+        $assert(data_in_sync, "video stream must be in sync");
+        // Run two more full frames so the FIFO carries post-fill data
+        for _i in 0..600 {
+            vclk.next(1);
+            clk.next (3);
+        }
+
+        // ---- Capture one full frame and verify every DE pixel ----
+        // Wait for a vsync pulse, then count DE pixels from the frame start.
+        seen_vsync = '0;
+        frame_done = '0;
+        de_count   = 0;
+        for _i in 0..2000 {
+            if video.v_sync {
+                seen_vsync = '1;
+            }
+            if seen_vsync && !video.v_sync {
+                // vsync ended: frame body starts
+                break;
+            }
+            vclk.next(1);
+            clk.next (3);
+        }
+        $assert(seen_vsync, "vsync must occur");
+
+        for _i in 0..600 {
+            if video.data_enable {
+                x        = de_count % 16;
+                y        = de_count / 16;
+                expected = if (x >= 4) && (x <= 7) && (y >= 2) && (y <= 3) ? 16'h07e0 : 16'hf800;
+                $assert (video.pixel_data == expected, "frame pixel must match the drawn pattern");
+                de_count += 1;
+                if de_count == 128 {
+                    frame_done = '1;
+                    break;
+                }
+            }
+            vclk.next(1);
+            clk.next (3);
+        }
+        $display("de_count=%d", de_count);
+        $assert (frame_done, "a full 16x8 frame must be displayed");
+
+        $finish();
+    }
+}

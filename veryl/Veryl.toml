@@ -1,0 +1,14 @@
+[project]
+name = "atom_display"
+version = "0.1.0"
+
+[build]
+clock_type = "posedge"
+reset_type = "async_high"
+sources = ["src", "tb"]
+target = {type = "directory", path = "target"}
+# Raise when the SimSDRC frame buffer model is ported
+# (Heliodor uses 8388608 for a 16MB DRAM model).
+#evaluate_size_limit = 8388608
+
+omit_project_prefix = true

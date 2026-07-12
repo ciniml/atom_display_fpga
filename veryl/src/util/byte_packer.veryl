@@ -1,0 +1,56 @@
+// byte_packer.veryl
+// Packs a byte stream into OutputBytes-wide words, first byte at the
+// most significant position (big-endian, matching the SPI protocol's
+// byte order for RGB565/RGB888 pixel data).
+// Functional port of fpga_samples width_converter.scala (WidthConverter)
+// as used by the command processor: the Chisel original packs LSB-first
+// and the consumer swaps bytes back (SwapByteOrder); this port packs
+// MSB-first directly. The flush/last path is unused by the design and
+// is not implemented.
+// SPDX-License-Identifier: BSL-1.0
+
+pub module byte_packer #(
+    param OutputBytes: u32 = 2,
+) (
+    i_clk  : input  clock                 ,
+    i_rst  : input  reset                 ,
+    i_valid: input  logic                 ,
+    o_ready: output logic                 ,
+    i_data : input  logic<8>              ,
+    o_valid: output logic                 ,
+    i_ready: input  logic                 ,
+    o_data : output logic<OutputBytes * 8>,
+) {
+    const COUNT_BITS: u32 = $clog2(OutputBytes + 1);
+
+    var acc      : logic<OutputBytes * 8>;
+    var count    : logic<COUNT_BITS>     ;
+    var out_valid: logic                 ;
+    var out_data : logic<OutputBytes * 8>;
+
+    assign o_ready = count <: (OutputBytes as COUNT_BITS);
+    assign o_valid = out_valid;
+    assign o_data  = out_data;
+
+    always_ff {
+        if_reset {
+            acc       = '0;
+            count     = '0;
+            out_valid = '0;
+            out_data  = '0;
+        } else {
+            if out_valid && i_ready {
+                out_valid = '0;
+            }
+            if (count == (OutputBytes as COUNT_BITS)) && (!out_valid || i_ready) {
+                out_valid = '1;
+                out_data  = acc;
+                count     = '0;
+            }
+            if i_valid && o_ready {
+                acc   =  {acc[OutputBytes * 8 - 9:0], i_data}; // first byte ends up at MSB
+                count += 1;
+            }
+        }
+    }
+}

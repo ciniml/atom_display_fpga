@@ -1,0 +1,39 @@
+// irrevocable_gate.veryl
+// Registered gate stage for valid/ready streams: input is accepted only
+// while i_enable is high; output is registered (1-entry skid).
+// Veryl port of fpga_samples irrevocable_gate.scala (IrrevocableGate).
+// SPDX-License-Identifier: BSL-1.0
+
+pub module irrevocable_gate::<T: type> (
+    i_clk   : input   clock                 ,
+    i_rst   : input   reset                 ,
+    i_enable: input   logic                 ,
+    i_data  : modport stream_if::<T>::slave ,
+    o_data  : modport stream_if::<T>::master,
+) {
+    var out_valid: logic;
+    var out_data : T    ;
+
+    always_ff {
+        if_reset {
+            out_valid = '0;
+        } else {
+            if out_valid && o_data.ready {
+                out_valid = '0;
+            }
+            if (!out_valid || o_data.ready) && i_enable {
+                out_valid = i_data.valid;
+            }
+        }
+    }
+
+    always_ff {
+        if (!out_valid || o_data.ready) && i_enable {
+            out_data = i_data.payload;
+        }
+    }
+
+    assign i_data.ready   = (!out_valid || o_data.ready) && i_enable;
+    assign o_data.valid   = out_valid;
+    assign o_data.payload = out_data;
+}

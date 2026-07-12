@@ -1,0 +1,120 @@
+// Unit test for axi4_reg_slice (axi/axi4_reg_slice.veryl) together
+// with the tb_axi4_memory slave model: burst write then burst read
+// back through the slice.
+// SPDX-License-Identifier: BSL-1.0
+
+#[test(test_axi4_reg_slice)]
+#[allow(unassign_variable)]
+module test_axi4_reg_slice {
+    inst clk: $tb::clock_gen;
+    inst rst: $tb::reset_gen (
+        clk: clk,
+    );
+
+    inst m_axi: axi4_if::<16, 32>;
+    inst s_axi: axi4_if::<16, 32>;
+
+    inst dut: axi4_reg_slice::<16, 32> (
+        i_clk: clk  ,
+        i_rst: rst  ,
+        i_axi: m_axi,
+        o_axi: s_axi,
+    );
+
+    inst memory: tb_axi4_memory::<16, 32> (
+        i_clk: clk  ,
+        i_rst: rst  ,
+        axi  : s_axi,
+    );
+
+    initial {
+        m_axi.arvalid = '0;
+        m_axi.ar.addr = '0;
+        m_axi.ar.len  = '0;
+        m_axi.rready  = '1;
+        m_axi.awvalid = '0;
+        m_axi.aw.addr = '0;
+        m_axi.aw.len  = '0;
+        m_axi.wvalid  = '0;
+        m_axi.w.data  = '0;
+        m_axi.w.strb  = '0;
+        m_axi.w.last  = '0;
+        m_axi.bready  = '1;
+        rst.assert   (clk);
+        clk.next     (2);
+
+        // 4-beat burst write to 0x0010
+        m_axi.awvalid = '1;
+        m_axi.aw.addr = 16'h0010;
+        m_axi.aw.len  = 8'd3;
+        for _i in 0..20 {
+            if m_axi.awready {
+                break;
+            }
+            clk.next(1);
+        }
+        $assert      (m_axi.awready, "AW must be accepted");
+        clk.next     (1);
+        m_axi.awvalid = '0;
+
+        m_axi.wvalid = '1;
+        m_axi.w.strb = 4'hf;
+        for beat in 0..4 {
+            m_axi.w.data = (32'hd0d0_0000 + beat) as 32;
+            m_axi.w.last = beat == 3;
+            for _i in 0..20 {
+                if m_axi.wready {
+                    break;
+                }
+                clk.next(1);
+            }
+            $assert (m_axi.wready, "W beat must be accepted");
+            clk.next(1);
+        }
+        m_axi.wvalid = '0;
+
+        // Wait for write response
+        for _i in 0..20 {
+            if m_axi.bvalid {
+                break;
+            }
+            clk.next(1);
+        }
+        $assert (m_axi.bvalid, "B response must arrive");
+        $assert (m_axi.b.resp == axi4_pkg::Axi4Resp::okay);
+        clk.next(1);
+
+        // 4-beat burst read back from 0x0010
+        m_axi.arvalid = '1;
+        m_axi.ar.addr = 16'h0010;
+        m_axi.ar.len  = 8'd3;
+        for _i in 0..20 {
+            if m_axi.arready {
+                break;
+            }
+            clk.next(1);
+        }
+        $assert      (m_axi.arready, "AR must be accepted");
+        clk.next     (1);
+        m_axi.arvalid = '0;
+
+        for beat in 0..4 {
+            for _i in 0..20 {
+                if m_axi.rvalid {
+                    break;
+                }
+                clk.next(1);
+            }
+            $assert(m_axi.rvalid, "R beat must arrive");
+            $assert(m_axi.r.data == (32'hd0d0_0000 + beat) as 32, "read data must match written data");
+            if beat == 3 {
+                $assert(m_axi.r.last, "last beat must assert RLAST");
+            } else {
+                $assert(!m_axi.r.last);
+            }
+            clk.next(1);
+        }
+
+        $finish();
+    }
+}

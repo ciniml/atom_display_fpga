@@ -1,0 +1,863 @@
+// command_processor.veryl
+// Interprets the SPI drawing command protocol and drives the stream
+// writer/reader: FILLRECT / DRAW_PIXEL / WRITE_RAW (RGB332/565/888) /
+// COPYRECT / CA_SET / RA_SET / READ_ID / SET_SCREEN_SCALE /
+// SET_SCREEN_ORIGIN / SET_RESOLUTION / SET_VIDEO_CLOCK, plus the
+// busy/idle/result status byte stream returned over SPI MISO.
+// Veryl port of atom_display command_processor.scala (CommandProcessor),
+// specialized to 16bpp pixels / 32-bit bus like the rest of the port.
+// MaxWidth/MaxHeight correspond to Chisel's processorVideoParams
+// (pixelsH, pixelsV = 2 * frame height for the off-screen bank).
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+pub module command_processor::<AddressBits: u32, MaxWidth: u32, MaxHeight: u32> #(
+    param EnableCopyRect               : u32 = 1,
+    param SkipFrameBufferInitialization: u32 = 0,
+    // Chisel: defaultVideoParams (initial frame buffer window)
+    param DefaultPixelsH: u32 = 1280,
+    param DefaultPixelsV: u32 = 720 ,
+) (
+    i_clk: input clock,
+    i_rst: input reset,
+    // SPI byte streams
+    i_data   : modport stream_if::<spi_pkg::SpiData>::slave ,
+    o_result : modport stream_if::<spi_pkg::SpiByte>::master,
+    o_is_busy: output  logic                                ,
+    // Stream reader (COPYRECT source)
+    o_reader_command_valid: output  logic                                                             ,
+    i_reader_command_ready: input   logic                                                             ,
+    o_reader_command      : output  video_pkg::StreamReaderCommand::<AddressBits, MaxWidth, MaxHeight>,
+    i_reader_data         : modport stream_if::<video_pkg::VideoSignal>::slave                        ,
+    i_reader_is_busy      : input   logic                                                             ,
+    // Stream writer
+    o_writer_command_valid: output  logic                                                             ,
+    i_writer_command_ready: input   logic                                                             ,
+    o_writer_command      : output  video_pkg::StreamWriterCommand::<AddressBits, MaxWidth, MaxHeight>,
+    o_writer_data         : modport stream_if::<video_pkg::VideoSignal>::master                       ,
+    i_writer_is_busy      : input   logic                                                             ,
+    // Configuration outputs
+    o_frame_buffer_config     : output video_pkg::FrameBufferReaderConfig,
+    o_video_config_valid      : output logic                             ,
+    o_video_config            : output video_pkg::VideoConfig            ,
+    o_video_clock_config_valid: output logic                             ,
+    o_video_clock_config      : output command_pkg::VideoClockConfig     ,
+    o_dbg_copy_rect           : output logic                             ,
+) {
+    const COUNT_H_BITS: u32 = $clog2(MaxWidth + 1);
+    const COUNT_V_BITS: u32 = $clog2(MaxHeight + 1);
+    const REMAIN_BITS : u32 = $clog2(MaxWidth * MaxHeight * 3 + 1);
+    const AREA_BITS   : u32 = REMAIN_BITS;
+    const WH_BITS     : u32 = COUNT_H_BITS + 1;
+
+    // ---- SPI input demux: 0 = command, 1..3 = pixel data (332/565/888) ----
+    inst spi_in       : stream_if::<spi_pkg::SpiData>;
+    inst spi_demux_out: stream_if::<spi_pkg::SpiData> [4];
+
+    var spi_select: logic<3>;
+
+    assign spi_in.valid   = i_data.valid;
+    assign spi_in.payload = i_data.payload;
+    assign i_data.ready   = spi_in.ready;
+
+    let spi_in_fire: logic = spi_in.valid && spi_in.ready;
+
+    inst u_spi_demux: irrevocable_unsafe_demux::<spi_pkg::SpiData> #(
+        N: 4,
+    ) (
+        i_data  : spi_in       ,
+        o_data  : spi_demux_out,
+        i_select: spi_select   ,
+    );
+
+    // ---- Pixel data mux: 0 = RGB332, 1 = RGB565, 2 = RGB888, 3 = frame buffer reader ----
+    inst pixel_mux_in : stream_if::<video_pkg::PixelType> [4];
+    inst pixel_mux_out: stream_if::<video_pkg::PixelType>;
+
+    var pixel_data_select: logic<3>;
+
+    inst u_pixel_mux: irrevocable_unsafe_mux::<video_pkg::PixelType> #(
+        N: 4,
+    ) (
+        i_data  : pixel_mux_in     ,
+        o_data  : pixel_mux_out    ,
+        i_select: pixel_data_select,
+    );
+
+    // Whole-payload copies: the native simulator does not support struct
+    // member access through interface-array elements.
+    var d1_payload: spi_pkg::SpiData;
+    var d2_payload: spi_pkg::SpiData;
+    var d3_payload: spi_pkg::SpiData;
+    assign d1_payload = spi_demux_out[1].payload;
+    assign d2_payload = spi_demux_out[2].payload;
+    assign d3_payload = spi_demux_out[3].payload;
+
+    // Index 0: RGB332 bytes -> native
+    assign pixel_mux_in[0].valid   = spi_demux_out[1].valid;
+    assign spi_demux_out[1].ready  = pixel_mux_in[0].ready;
+    assign pixel_mux_in[0].payload = command_pkg::rgb332_to_rgb565(d1_payload.data);
+
+    // Index 1: RGB565 byte pairs -> native
+    var p16_out_valid: logic    ;
+    var p16_out_ready: logic    ;
+    var p16_out_data : logic<16>;
+    var p16_in_ready : logic    ;
+
+    inst u_packer16: byte_packer #(
+        OutputBytes: 2,
+    ) (
+        i_clk  : i_clk                 ,
+        i_rst  : i_rst                 ,
+        i_valid: spi_demux_out[2].valid,
+        o_ready: p16_in_ready          ,
+        i_data : d2_payload.data       ,
+        o_valid: p16_out_valid         ,
+        i_ready: p16_out_ready         ,
+        o_data : p16_out_data          ,
+    );
+    assign spi_demux_out[2].ready  = p16_in_ready;
+    assign pixel_mux_in[1].valid   = p16_out_valid;
+    assign p16_out_ready           = pixel_mux_in[1].ready;
+    assign pixel_mux_in[1].payload = p16_out_data;
+
+    // Index 2: RGB888 byte triples -> native
+    var p24_out_valid: logic    ;
+    var p24_out_ready: logic    ;
+    var p24_out_data : logic<24>;
+    var p24_in_ready : logic    ;
+
+    inst u_packer24: byte_packer #(
+        OutputBytes: 3,
+    ) (
+        i_clk  : i_clk                 ,
+        i_rst  : i_rst                 ,
+        i_valid: spi_demux_out[3].valid,
+        o_ready: p24_in_ready          ,
+        i_data : d3_payload.data       ,
+        o_valid: p24_out_valid         ,
+        i_ready: p24_out_ready         ,
+        o_data : p24_out_data          ,
+    );
+    assign spi_demux_out[3].ready  = p24_in_ready;
+    assign pixel_mux_in[2].valid   = p24_out_valid;
+    assign p24_out_ready           = pixel_mux_in[2].ready;
+    assign pixel_mux_in[2].payload = command_pkg::rgb888_to_rgb565(p24_out_data);
+
+    // Index 3: frame buffer reader data through a packet queue
+    var rq_out_valid: logic    ;
+    var rq_out_ready: logic    ;
+    var rq_out_data : logic<16>;
+    var rq_in_ready : logic    ;
+
+    inst u_reader_queue: packet_queue::<video_pkg::PixelType> #(
+        DepthBits: 11, // 2048 entries
+    ) (
+        i_clk  : i_clk                            ,
+        i_rst  : i_rst                            ,
+        i_valid: i_reader_data.valid              ,
+        o_ready: rq_in_ready                      ,
+        i_data : i_reader_data.payload.pixel_data ,
+        i_last : i_reader_data.payload.end_of_line,
+        o_valid: rq_out_valid                     ,
+        i_ready: rq_out_ready                     ,
+        o_data : rq_out_data                      ,
+        o_last : _                                ,
+    );
+    assign i_reader_data.ready     = rq_in_ready;
+    assign pixel_mux_in[3].valid   = rq_out_valid;
+    assign rq_out_ready            = pixel_mux_in[3].ready;
+    assign pixel_mux_in[3].payload = rq_out_data;
+
+    // ---- Command stream (demux index 0) through a register slice ----
+    inst cmd_stream: stream_if::<spi_pkg::SpiData>;
+
+    inst u_data_slice: irrevocable_reg_slice::<spi_pkg::SpiData> (
+        i_clk : i_clk           ,
+        i_rst : i_rst           ,
+        i_data: spi_demux_out[0],
+        o_data: cmd_stream      ,
+    );
+
+    let data_valid: logic    = cmd_stream.valid;
+    let data_first: logic    = cmd_stream.payload.first;
+    let data_body : logic<8> = cmd_stream.payload.data;
+
+    // ---- Pixel data to the stream writer through a register slice ----
+    inst pixel_slice_out: stream_if::<video_pkg::PixelType>;
+
+    inst u_pixel_slice: irrevocable_reg_slice::<video_pkg::PixelType> (
+        i_clk : i_clk          ,
+        i_rst : i_rst          ,
+        i_data: pixel_mux_out  ,
+        o_data: pixel_slice_out,
+    );
+    assign o_writer_data.valid                  = pixel_slice_out.valid;
+    assign o_writer_data.payload.pixel_data     = pixel_slice_out.payload;
+    assign o_writer_data.payload.start_of_frame = '0;
+    assign o_writer_data.payload.end_of_line    = '0;
+    assign pixel_slice_out.ready                = o_writer_data.ready;
+
+    // ---- Commands and state ----
+    enum State: logic<3> {
+        s_clear,
+        s_clear_wait,
+        s_idle,
+        s_param_fetch,
+        s_pre_decode,
+        s_post_decode,
+        s_execute,
+        s_result,
+    }
+    var state: State;
+    assign o_is_busy = state != State::s_idle;
+
+    var command      : logic<8>;
+    var skip_to_first: logic   ;
+
+    let command_type  : logic<8> = command & 8'hf8;
+    let command_number: logic<8> = command & 8'h07;
+
+    var current_color  : logic<16>          ;
+    var current_x_start: logic<COUNT_H_BITS>;
+    var current_y_start: logic<COUNT_H_BITS>;
+    var current_x_end  : logic<COUNT_H_BITS>;
+    var current_y_end  : logic<COUNT_H_BITS>;
+
+    var current_width             : logic<WH_BITS>    ;
+    var current_height            : logic<WH_BITS>    ;
+    var current_area_pixels       : logic<AREA_BITS>  ;
+    var pixel_data_remaining_bytes: logic<REMAIN_BITS>;
+
+    // Parameters
+    const MAX_PARAMETER_BYTES      : u32                            = 12;
+    var   params                   : logic<8> [MAX_PARAMETER_BYTES];
+    var   params_fetched           : logic<4>                      ;
+    var   remaining_params_to_fetch: logic<4>                      ;
+    var   parameter_checksum       : logic<8>                      ;
+
+    let checksum_is_ok: logic = parameter_checksum == 8'hff;
+
+    // Results
+    var results_sent  : logic<3>;
+    var is_last_result: logic   ;
+
+    // Registered commands to reader/writer
+    var reader_command      : video_pkg::StreamReaderCommand::<AddressBits, MaxWidth, MaxHeight>;
+    var reader_command_valid: logic                                                             ;
+    var writer_command      : video_pkg::StreamWriterCommand::<AddressBits, MaxWidth, MaxHeight>;
+    var writer_command_valid: logic                                                             ;
+    var reader_is_busy_prev : logic                                                             ;
+    var writer_is_busy_prev : logic                                                             ;
+
+    assign o_reader_command_valid = reader_command_valid;
+    assign o_reader_command       = reader_command;
+    assign o_writer_command_valid = writer_command_valid;
+    assign o_writer_command       = writer_command;
+
+    // Configuration registers
+    var frame_buffer_config     : video_pkg::FrameBufferReaderConfig;
+    var video_config            : video_pkg::VideoConfig            ;
+    var video_config_valid      : logic                             ;
+    var video_clock_config      : command_pkg::VideoClockConfig     ;
+    var video_clock_config_valid: logic                             ;
+
+    assign o_frame_buffer_config      = frame_buffer_config;
+    assign o_video_config             = video_config;
+    assign o_video_config_valid       = video_config_valid;
+    assign o_video_clock_config       = video_clock_config;
+    assign o_video_clock_config_valid = video_clock_config_valid;
+
+    var dbg_copy_rect: logic;
+    assign o_dbg_copy_rect = dbg_copy_rect;
+
+    // ---- Parameter decode (combinational, from raw parameter bytes) ----
+    let coord_start: logic<16> = {params[0], params[1]};
+    let coord_end  : logic<16> = {params[2], params[3]};
+
+    let x_start: logic<16> = {params[0], params[1]};
+    let y_start: logic<16> = {params[2], params[3]};
+    let x_end  : logic<16> = {params[4], params[5]};
+    let y_end  : logic<16> = {params[6], params[7]};
+
+    let fill_color_rgb332: logic<8>  = params[8];
+    let fill_color_rgb565: logic<16> = {params[8], params[9]};
+    let fill_color_rgb888: logic<24> = {params[8], params[9], params[10]};
+
+    let x_dest_start: logic<16> = {params[8], params[9]};
+    let y_dest_start: logic<16> = {params[10], params[11]};
+
+    let pixel_fill_color_rgb332: logic<8>  = params[4];
+    let pixel_fill_color_rgb565: logic<16> = {params[4], params[5]};
+    let pixel_fill_color_rgb888: logic<24> = {params[4], params[5], params[6]};
+
+    function check_coord_error (
+        x: input logic<16>,
+        y: input logic<16>,
+    ) -> logic {
+        return (x >= (MaxWidth as 16)) || (y >= (MaxHeight as 16));
+    }
+    function check_rect_range_error (
+        xs: input logic<16>,
+        xe: input logic<16>,
+        ys: input logic<16>,
+        ye: input logic<16>,
+    ) -> logic {
+        return (xs >= (MaxWidth as 16)) || (xe >= (MaxWidth as 16)) || (ys >= (MaxHeight as 16))
+            || (ye >= (MaxHeight as 16));
+    }
+    function check_rect_error (
+        xs: input logic<16>,
+        xe: input logic<16>,
+        ys: input logic<16>,
+        ye: input logic<16>,
+    ) -> logic {
+        return (xs >: xe) || (ys >: ye) || check_rect_range_error(xs, xe, ys, ye);
+    }
+
+    // Registered decode results (Chisel: RegNext; 2 cycles for dest range)
+    var rect_range_error: logic    ;
+    var rect_error      : logic    ;
+    var coord_error     : logic    ;
+    var x_dest_end      : logic<16>;
+    var y_dest_end      : logic<16>;
+    var dest_range_error: logic    ;
+
+    // Scaling / origin / clock / resolution parameters
+    let scaling_x             : logic<8>  = params[0];
+    let scaling_y             : logic<8>  = params[1];
+    let scaled_logical_width  : logic<16> = {params[2], params[3]};
+    let scaled_logical_height : logic<16> = {params[4], params[5]};
+    let screen_origin_x       : logic<16> = {params[0], params[1]};
+    let screen_origin_y       : logic<16> = {params[2], params[3]};
+    let clock_input_divider   : logic<16> = {params[0], params[1]};
+    let clock_feedback_divider: logic<16> = {params[2], params[3]};
+    let clock_output_divider  : logic<16> = {params[4], params[5]};
+    let use_half_clock        : logic     = params[6][0];
+
+    var res_params_v: video_pkg::VideoConfig;
+    var res_params_h: video_pkg::VideoConfig;
+    always_comb {
+        res_params_v               = video_config;
+        res_params_v.pulse_width_v = ({params[0], params[1]}) as video_pkg::PULSE_WIDTH_V_BITS;
+        res_params_v.back_porch_v  = ({params[2], params[3]}) as video_pkg::BACK_PORCH_V_BITS;
+        res_params_v.pixels_v      = ({params[4], params[5]}) as video_pkg::PIXELS_V_BITS;
+        res_params_v.front_porch_v = ({params[6], params[7]}) as video_pkg::FRONT_PORCH_V_BITS;
+
+        res_params_h               = video_config;
+        res_params_h.pulse_width_h = ({params[0], params[1]}) as video_pkg::PULSE_WIDTH_H_BITS;
+        res_params_h.back_porch_h  = ({params[2], params[3]}) as video_pkg::BACK_PORCH_H_BITS;
+        res_params_h.pixels_h      = ({params[4], params[5]}) as video_pkg::PIXELS_H_BITS;
+        res_params_h.front_porch_h = ({params[6], params[7]}) as video_pkg::FRONT_PORCH_H_BITS;
+    }
+
+    var pre_decode_counter: logic;
+
+    // ---- Command decode in idle state (combinational) ----
+    var decode_valid_command  : logic   ;
+    var decode_params_to_fetch: logic<4>;
+    var decode_results_to_send: logic<3>;
+
+    let data_command_type  : logic<8> = data_body & 8'hf8;
+    let data_command_number: logic<8> = data_body & 8'h07;
+
+    always_comb {
+        decode_valid_command   = '0;
+        decode_params_to_fetch = '0;
+        decode_results_to_send = '0;
+        if data_body == command_pkg::CMD_READ_ID {
+            decode_results_to_send = 4;
+            decode_valid_command   = '1;
+        } else if data_body == command_pkg::CMD_COPY_RECT {
+            decode_params_to_fetch = 12;
+            decode_valid_command   = '1;
+        } else if data_body == command_pkg::CMD_SET_SCREEN_SCALE {
+            decode_params_to_fetch = 7; // [scale x][scale y][logical w(2)][logical h(2)][checksum]
+            decode_valid_command   = '1;
+        } else if data_body == command_pkg::CMD_SET_SCREEN_ORIGIN {
+            decode_params_to_fetch = 5; // [origin x(2)][origin y(2)][checksum]
+            decode_valid_command   = '1;
+        } else if (data_body == command_pkg::CMD_SET_RESOLUTION_V) || (data_body == command_pkg::CMD_SET_RESOLUTION_H) {
+            decode_params_to_fetch = 9;
+            decode_valid_command   = '1;
+        } else if data_body == command_pkg::CMD_SET_VIDEO_CLOCK {
+            decode_params_to_fetch = 8; // [in div(2)][fb div(2)][out div(2)][flags][checksum]
+            decode_valid_command   = '1;
+        } else {
+            case data_command_type {
+                command_pkg::CMDTYPE_SET_COORD: { // CA_SET, RA_SET
+                    if (data_command_number == command_pkg::CMDNUM_COLUMN_ADDRESS_SET)
+                        || (data_command_number == command_pkg::CMDNUM_ROW_ADDRESS_SET) {
+                        decode_params_to_fetch = 4;
+                        decode_valid_command   = '1;
+                    }
+                }
+                command_pkg::CMDTYPE_DRAW_PIXEL: {
+                    if data_command_number <= 3 {
+                        decode_params_to_fetch = (4 + data_command_number) as 4;
+                        decode_valid_command   = '1;
+                    }
+                }
+                command_pkg::CMDTYPE_FILL_RECT: {
+                    if data_command_number <= 3 {
+                        decode_params_to_fetch = (8 + data_command_number) as 4;
+                        decode_valid_command   = '1;
+                    }
+                }
+                command_pkg::CMDTYPE_WRITE_RAW: {
+                    if ('0 <: data_command_number) && (data_command_number <= 3) {
+                        decode_params_to_fetch = '0;
+                        decode_valid_command   = '1;
+                    }
+                }
+                default: {}
+            }
+        }
+    }
+
+    assign cmd_stream.ready = (state == State::s_idle) || (state == State::s_param_fetch);
+
+    // New color for DRAW_PIXEL / FILL_RECT (by pixel format suffix)
+    function select_color (
+        num   : input logic<8> ,
+        cur   : input logic<16>,
+        rgb332: input logic<8> ,
+        rgb565: input logic<16>,
+        rgb888: input logic<24>,
+    ) -> logic<16> {
+        case num {
+            8'd1   : return command_pkg::rgb332_to_rgb565(rgb332);
+            8'd2   : return rgb565;
+            8'd3   : return command_pkg::rgb888_to_rgb565(rgb888);
+            default: return cur;
+        }
+    }
+
+    // ---- Result status stream ----
+    enum RState: logic<2> {
+        s_idle,
+        s_ensure_send_busy,
+        s_busy,
+    }
+    var result_state: RState;
+
+    var result_valid        : logic   ;
+    var result_data         : logic<8>;
+    var result_output_valid : logic   ;
+    var result_output_data  : logic<8>;
+    var is_prev_state_result: logic   ;
+
+    assign o_result.valid   = result_valid;
+    assign o_result.payload = result_data;
+
+    let result_busy: logic = ((state != State::s_idle) && ((state != State::s_result) || !is_prev_state_result))
+        || (i_data.valid && (state == State::s_idle) && (i_data.payload.data != 8'h00));
+
+    let result_output_ready: logic = (result_state == RState::s_idle) && !result_busy
+        && (!result_valid || o_result.ready);
+
+    // ---- Main state machine ----
+    always_ff {
+        if_reset {
+            state                      = State::s_clear;
+            spi_select                 = '0;
+            pixel_data_select          = 4; // disabled
+            command                    = '0;
+            skip_to_first              = '0;
+            current_color              = '0;
+            current_x_start            = '0;
+            current_y_start            = '0;
+            current_x_end              = '0;
+            current_y_end              = '0;
+            current_width              = '0;
+            current_height             = '0;
+            current_area_pixels        = '0;
+            pixel_data_remaining_bytes = '0;
+            for i in 0..MAX_PARAMETER_BYTES {
+                params[i] = '0;
+            }
+            params_fetched               = '0;
+            remaining_params_to_fetch    = '0;
+            parameter_checksum           = '0;
+            results_sent                 = '0;
+            is_last_result               = '0;
+            reader_command               = 0 as video_pkg::StreamReaderCommand::<AddressBits, MaxWidth, MaxHeight>;
+            reader_command_valid         = '0;
+            writer_command               = 0 as video_pkg::StreamWriterCommand::<AddressBits, MaxWidth, MaxHeight>;
+            writer_command_valid         = '0;
+            reader_is_busy_prev          = '0;
+            writer_is_busy_prev          = '0;
+            frame_buffer_config.scale_x  = 1;
+            frame_buffer_config.scale_y  = 1;
+            frame_buffer_config.start_x  = '0;
+            frame_buffer_config.start_y  = '0;
+            frame_buffer_config.pixels_h = DefaultPixelsH as video_pkg::PIXELS_H_BITS;
+            frame_buffer_config.pixels_v = DefaultPixelsV as video_pkg::PIXELS_V_BITS;
+            video_config                 = video_pkg::preset_default();
+            video_config_valid           = '0;
+            video_clock_config           = command_pkg::video_clock_config_default();
+            video_clock_config_valid     = '0;
+            dbg_copy_rect                = '0;
+            rect_range_error             = '0;
+            rect_error                   = '0;
+            coord_error                  = '0;
+            x_dest_end                   = '0;
+            y_dest_end                   = '0;
+            dest_range_error             = '0;
+            pre_decode_counter           = '0;
+            result_state                 = RState::s_idle;
+            result_valid                 = '0;
+            result_data                  = '0;
+            result_output_valid          = '0;
+            result_output_data           = '0;
+            is_prev_state_result         = '0;
+        } else {
+            // Registered decode pipeline (Chisel: unconditional RegNext)
+            rect_range_error     = check_rect_range_error(x_start, x_end, y_start, y_end);
+            rect_error           = check_rect_error(x_start, x_end, y_start, y_end);
+            coord_error          = check_coord_error(x_start, y_start);
+            x_dest_end           = x_dest_start + x_end - x_start;
+            y_dest_end           = y_dest_start + y_end - y_start;
+            dest_range_error     = check_rect_range_error(x_dest_start, x_dest_end, y_dest_start, y_dest_end);
+            current_width        = ({1'b0, current_x_end}) - ({1'b0, current_x_start}) + 1;
+            current_height       = ({1'b0, current_y_end}) - ({1'b0, current_y_start}) + 1;
+            current_area_pixels  = (current_width * current_height) as AREA_BITS;
+            reader_is_busy_prev  = i_reader_is_busy;
+            writer_is_busy_prev  = i_writer_is_busy;
+            is_prev_state_result = state == State::s_result;
+
+            // One-cycle pulses
+            video_config_valid       = '0;
+            video_clock_config_valid = '0;
+
+            if reader_command_valid && i_reader_command_ready {
+                reader_command_valid = '0;
+            }
+            if writer_command_valid && i_writer_command_ready {
+                writer_command_valid = '0;
+            }
+
+            case state {
+                State::s_clear: {
+                    if SkipFrameBufferInitialization == 0 {
+                        state                          = State::s_clear_wait;
+                        writer_command.start_x         = '0;
+                        writer_command.end_x_inclusive = (MaxWidth - 1) as COUNT_H_BITS;
+                        writer_command.start_y         = '0;
+                        writer_command.end_y_inclusive = (MaxHeight - 1) as COUNT_V_BITS;
+                        writer_command.do_fill         = '1;
+                        writer_command.color           = '0;
+                        writer_command_valid           = '1;
+                    } else {
+                        state = State::s_idle;
+                    }
+                }
+                State::s_clear_wait: {
+                    if writer_is_busy_prev && !i_writer_is_busy {
+                        state = State::s_idle;
+                    }
+                }
+                State::s_idle: {
+                    pre_decode_counter = 1;
+                    parameter_checksum = data_body; // start checksum with the command byte
+                    if data_valid && (!skip_to_first || data_first) {
+                        params_fetched = '0;
+                        if decode_valid_command {
+                            command                   = data_body;
+                            remaining_params_to_fetch = decode_params_to_fetch;
+                            results_sent              = '0;
+                            is_last_result            = '0;
+                            if decode_results_to_send >: '0 {
+                                state = State::s_result;
+                            } else if decode_params_to_fetch == '0 {
+                                state = State::s_pre_decode;
+                            } else {
+                                state = State::s_param_fetch;
+                            }
+                            if data_body == command_pkg::CMD_COPY_RECT {
+                                dbg_copy_rect = '1;
+                            }
+                        }
+                        skip_to_first = !decode_valid_command;
+                    }
+                }
+                State::s_param_fetch: {
+                    if data_valid {
+                        parameter_checksum        =  parameter_checksum + data_body;
+                        params[params_fetched]    =  data_body;
+                        params_fetched            += 1;
+                        remaining_params_to_fetch -= 1;
+                        if remaining_params_to_fetch == 1 {
+                            state = State::s_pre_decode;
+                        }
+                    }
+                }
+                State::s_pre_decode: {
+                    pre_decode_counter -= 1;
+                    if pre_decode_counter == '0 {
+                        state = State::s_post_decode;
+                    }
+                }
+                State::s_post_decode: {
+                    if command == command_pkg::CMD_COPY_RECT {
+                        if (EnableCopyRect == 0) || rect_range_error || dest_range_error {
+                            state         = State::s_idle;
+                            skip_to_first = '1;
+                        } else {
+                            state                          = State::s_execute;
+                            reader_command.address_offset  = '0;
+                            reader_command.start_x         = x_start as COUNT_H_BITS;
+                            reader_command.end_x_inclusive = x_end as COUNT_H_BITS;
+                            reader_command.start_y         = y_start as COUNT_V_BITS;
+                            reader_command.end_y_inclusive = y_end as COUNT_V_BITS;
+                            reader_command_valid           = '1;
+                            writer_command.address_offset  = '0;
+                            writer_command.start_x         = x_dest_start as COUNT_H_BITS;
+                            writer_command.end_x_inclusive = x_dest_end as COUNT_H_BITS;
+                            writer_command.start_y         = y_dest_start as COUNT_V_BITS;
+                            writer_command.end_y_inclusive = y_dest_end as COUNT_V_BITS;
+                            writer_command.do_fill         = '0;
+                            writer_command.color           = '0;
+                            writer_command_valid           = '1;
+                            pixel_data_select              = 3; // frame buffer reader stream
+                        }
+                    } else if command == command_pkg::CMD_SET_SCREEN_SCALE {
+                        state = State::s_idle;
+                        if !checksum_is_ok {
+                            skip_to_first = '1;
+                        } else {
+                            frame_buffer_config.scale_x  = scaling_x as video_pkg::SCALE_BITS;
+                            frame_buffer_config.scale_y  = scaling_y as video_pkg::SCALE_BITS;
+                            frame_buffer_config.pixels_h = scaled_logical_width as video_pkg::PIXELS_H_BITS;
+                            frame_buffer_config.pixels_v = scaled_logical_height as video_pkg::PIXELS_V_BITS;
+                        }
+                    } else if command == command_pkg::CMD_SET_SCREEN_ORIGIN {
+                        state = State::s_idle;
+                        if !checksum_is_ok {
+                            skip_to_first = '1;
+                        } else {
+                            frame_buffer_config.start_x = screen_origin_x as video_pkg::START_X_BITS;
+                            frame_buffer_config.start_y = screen_origin_y as video_pkg::START_Y_BITS;
+                        }
+                    } else if (command == command_pkg::CMD_SET_RESOLUTION_V)
+                        || (command == command_pkg::CMD_SET_RESOLUTION_H) {
+                        state = State::s_idle;
+                        if !checksum_is_ok {
+                            skip_to_first = '1;
+                        } else {
+                            if command == command_pkg::CMD_SET_RESOLUTION_V {
+                                video_config = res_params_v;
+                            } else {
+                                video_config       = res_params_h;
+                                video_config_valid = '1;
+                            }
+                        }
+                    } else if command == command_pkg::CMD_SET_VIDEO_CLOCK {
+                        state = State::s_idle;
+                        if !checksum_is_ok {
+                            skip_to_first = '1;
+                        } else {
+                            video_clock_config.input_divider    = clock_input_divider;
+                            video_clock_config.output_divider   = clock_output_divider;
+                            video_clock_config.feedback_divider = clock_feedback_divider;
+                            video_clock_config.use_half_clock   = use_half_clock;
+                            video_clock_config_valid            = '1;
+                        }
+                    } else {
+                        case command_type {
+                            command_pkg::CMDTYPE_SET_COORD: {
+                                state = State::s_idle;
+                                if command_number == command_pkg::CMDNUM_COLUMN_ADDRESS_SET {
+                                    current_x_start = coord_start as COUNT_H_BITS;
+                                    current_x_end   = coord_end as COUNT_H_BITS;
+                                } else {
+                                    current_y_start = coord_start as COUNT_H_BITS;
+                                    current_y_end   = coord_end as COUNT_H_BITS;
+                                }
+                            }
+                            command_pkg::CMDTYPE_DRAW_PIXEL: {
+                                if coord_error {
+                                    state         = State::s_idle;
+                                    skip_to_first = '1;
+                                } else {
+                                    state                          = State::s_execute;
+                                    writer_command.address_offset  = '0;
+                                    writer_command.start_x         = x_start as COUNT_H_BITS;
+                                    writer_command.end_x_inclusive = x_start as COUNT_H_BITS;
+                                    writer_command.start_y         = y_start as COUNT_V_BITS;
+                                    writer_command.end_y_inclusive = y_start as COUNT_V_BITS;
+                                    writer_command.do_fill         = '1;
+                                    writer_command.color           = select_color(
+                                        command_number,
+                                        current_color,
+                                        pixel_fill_color_rgb332,
+                                        pixel_fill_color_rgb565,
+                                        pixel_fill_color_rgb888,
+                                    );
+                                    current_color                  = select_color(
+                                        command_number,
+                                        current_color,
+                                        pixel_fill_color_rgb332,
+                                        pixel_fill_color_rgb565,
+                                        pixel_fill_color_rgb888,
+                                    );
+                                    writer_command_valid           = '1;
+                                }
+                            }
+                            command_pkg::CMDTYPE_FILL_RECT: {
+                                if rect_error {
+                                    state         = State::s_idle;
+                                    skip_to_first = '1;
+                                } else {
+                                    state                          = State::s_execute;
+                                    writer_command.address_offset  = '0;
+                                    writer_command.start_x         = x_start as COUNT_H_BITS;
+                                    writer_command.end_x_inclusive = x_end as COUNT_H_BITS;
+                                    writer_command.start_y         = y_start as COUNT_V_BITS;
+                                    writer_command.end_y_inclusive = y_end as COUNT_V_BITS;
+                                    writer_command.do_fill         = '1;
+                                    writer_command.color           = select_color(
+                                        command_number,
+                                        current_color,
+                                        fill_color_rgb332,
+                                        fill_color_rgb565,
+                                        fill_color_rgb888,
+                                    );
+                                    current_color                  = select_color(
+                                        command_number,
+                                        current_color,
+                                        fill_color_rgb332,
+                                        fill_color_rgb565,
+                                        fill_color_rgb888,
+                                    );
+                                    writer_command_valid           = '1;
+                                }
+                            }
+                            command_pkg::CMDTYPE_WRITE_RAW: {
+                                state                          = State::s_execute;
+                                writer_command.address_offset  = '0;
+                                writer_command.start_x         = current_x_start;
+                                writer_command.end_x_inclusive = current_x_end;
+                                writer_command.start_y         = current_y_start as COUNT_V_BITS;
+                                writer_command.end_y_inclusive = current_y_end as COUNT_V_BITS;
+                                writer_command.do_fill         = '0;
+                                writer_command.color           = '0;
+                                writer_command_valid           = '1;
+                                pixel_data_select              = (command_number - 1) as 3;
+                                case command_number {
+                                    8'd1: {
+                                        pixel_data_remaining_bytes = current_area_pixels;
+                                    }
+                                    8'd2: {
+                                        pixel_data_remaining_bytes = current_area_pixels << 1;
+                                    }
+                                    8'd3: {
+                                        pixel_data_remaining_bytes = current_area_pixels + (current_area_pixels << 1);
+                                    }
+                                    default: {
+                                        pixel_data_remaining_bytes = '0;
+                                    }
+                                }
+                                // Route SPI bytes to the pixel stream
+                                spi_select = command_number as 3;
+                            }
+                            default: {}
+                        }
+                    }
+                }
+                State::s_execute: {
+                    if spi_in_fire && (pixel_data_remaining_bytes >: '0) {
+                        pixel_data_remaining_bytes -= 1;
+                        if pixel_data_remaining_bytes == 1 {
+                            spi_select = '0;
+                        }
+                    }
+                    if command == command_pkg::CMD_COPY_RECT {
+                        if (reader_is_busy_prev || writer_is_busy_prev) && !(i_reader_is_busy || i_writer_is_busy) {
+                            pixel_data_select = 4;
+                            state             = State::s_idle;
+                        }
+                    } else {
+                        case command_type {
+                            command_pkg::CMDTYPE_DRAW_PIXEL, command_pkg::CMDTYPE_FILL_RECT: {
+                                if writer_is_busy_prev && !i_writer_is_busy {
+                                    state = State::s_idle;
+                                }
+                            }
+                            command_pkg::CMDTYPE_WRITE_RAW: {
+                                if writer_is_busy_prev && !i_writer_is_busy {
+                                    pixel_data_select = 4;
+                                    state             = State::s_idle;
+                                }
+                            }
+                            default: {}
+                        }
+                    }
+                }
+                State::s_result: {
+                    if result_output_valid && result_output_ready {
+                        result_output_valid = '0;
+                        if is_last_result {
+                            state = State::s_idle;
+                        }
+                    }
+                    if command == command_pkg::CMD_READ_ID {
+                        if (!result_output_valid || result_output_ready) && (results_sent <: 4) {
+                            result_output_valid = '1;
+                            case results_sent {
+                                3'd0   : result_output_data = 8'h48; // 'H'
+                                3'd1   : result_output_data = 8'h44; // 'D'
+                                3'd2   : result_output_data = 8'h00;
+                                default: result_output_data = 8'h04;
+                            }
+                            results_sent   += 1;
+                            is_last_result =  results_sent == 3;
+                        }
+                    }
+                }
+            }
+
+            // ---- Result status stream state machine ----
+            if result_valid && o_result.ready {
+                result_valid = '0;
+            }
+            case result_state {
+                RState::s_idle: {
+                    if result_busy {
+                        if !result_valid || o_result.ready {
+                            result_data  = 8'h00; // BUSY
+                            result_valid = '1;
+                            result_state = RState::s_busy;
+                        } else {
+                            result_state = RState::s_ensure_send_busy;
+                        }
+                    } else {
+                        if !result_valid || o_result.ready {
+                            result_valid = '1;
+                            if result_output_valid && result_output_ready {
+                                result_data = result_output_data;
+                            } else {
+                                result_data = 8'hff; // IDLE
+                            }
+                        }
+                    }
+                }
+                RState::s_ensure_send_busy: {
+                    if !result_valid || o_result.ready {
+                        result_data  = 8'h00; // BUSY
+                        result_valid = '1;
+                        result_state = RState::s_busy;
+                    }
+                }
+                RState::s_busy: {
+                    if !result_valid || o_result.ready {
+                        result_valid = '1;
+                        result_data  = if result_busy ? 8'h00 : 8'hff;
+                        if !result_busy {
+                            result_state = RState::s_idle;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

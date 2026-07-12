@@ -1,0 +1,136 @@
+// tb_sim_sdrc.veryl
+// Behavioral model of the GOWIN SDRAM controller (SDRC) for testbenches,
+// including the measured command latencies and the delayed busy_n
+// assertion of the real IP.
+// Veryl port of fpga_samples gowin/sdram.scala (SimSDRC).
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+pub module tb_sim_sdrc::<AddressBits: u32, DataBytes: u32, DataBits: u32, MaxBurstLength: u32> #(
+    param MemWords: u32 = 1024,
+) (
+    i_clk: input   clock                                                    ,
+    i_rst: input   reset                                                    ,
+    sdrc : modport sdrc_if::<AddressBits, DataBytes, MaxBurstLength>::device,
+) {
+    const BURST_COUNT_BITS: u32 = $clog2(MaxBurstLength) + 1;
+    const ADDR_CMP_BITS   : u32 = AddressBits + 1; // avoid MemWords truncating to 0
+
+    var mem: logic<DataBits> [MemWords];
+
+    enum State: logic<3> {
+        s_reset,
+        s_idle,
+        s_read,
+        s_write,
+        s_write_delay,
+    }
+
+    var state            : State                  ;
+    var init_count       : logic<8>               ;
+    var address          : logic<AddressBits>     ;
+    var burst_count      : logic<BURST_COUNT_BITS>;
+    var data             : logic<DataBits>        ;
+    var next_data_mask   : logic<DataBits>        ;
+    var next_write_data  : logic<DataBits>        ;
+    var delay            : logic<8>               ;
+    var read_valid       : logic                  ;
+    var busy_assert_delay: logic<3>               ;
+
+    // Chisel: FillInterleaved(8, ~io.sdrc.dqm)
+    var dqm_mask: logic<DataBits>;
+    always_comb {
+        for i in 0..DataBits {
+            dqm_mask[i] = ~sdrc.dqm[i / 8];
+        }
+    }
+
+    always_ff {
+        if_reset {
+            state             = State::s_reset;
+            init_count        = 8'd100;
+            address           = '0;
+            burst_count       = '0;
+            data              = '0;
+            next_data_mask    = '0;
+            next_write_data   = '0;
+            delay             = '0;
+            read_valid        = '0;
+            busy_assert_delay = '0;
+        } else {
+            read_valid        = '0;
+            busy_assert_delay = busy_assert_delay >> 1;
+
+            case state {
+                State::s_reset: {
+                    if init_count == '0 {
+                        state = State::s_idle;
+                    } else {
+                        init_count -= 1;
+                    }
+                }
+                State::s_idle: {
+                    if !sdrc.rd_n {
+                        address           = sdrc.addr;
+                        burst_count       = {1'b0 repeat BURST_COUNT_BITS - $bits(sdrc.data_len), sdrc.data_len};
+                        delay             = 8'd16; // From the actual waveform measured by GAO
+                        busy_assert_delay = 3'b111;
+                        state             = State::s_read;
+                    } else if !sdrc.wr_n {
+                        address           = sdrc.addr;
+                        data              = mem[sdrc.addr];
+                        next_data_mask    = dqm_mask;
+                        next_write_data   = sdrc.data_write;
+                        burst_count       = {1'b0 repeat BURST_COUNT_BITS - $bits(sdrc.data_len), sdrc.data_len};
+                        delay             = 8'd3;
+                        busy_assert_delay = 3'b111;
+                        state             = State::s_write;
+                    }
+                }
+                State::s_read: {
+                    if delay == '0 {
+                        data       =  if ({1'b0, address}) <: (MemWords as ADDR_CMP_BITS) ? mem[address] : '0;
+                        address    += 1;
+                        read_valid =  '1;
+                        if burst_count == '0 {
+                            state = State::s_idle;
+                        } else {
+                            burst_count -= 1;
+                        }
+                    } else {
+                        delay      -= 1;
+                        read_valid =  '0;
+                    }
+                }
+                State::s_write: {
+                    address         = address + 1;
+                    next_write_data = sdrc.data_write;
+                    next_data_mask  = dqm_mask;
+                    if (({1'b0, address}) + 1) <: (MemWords as ADDR_CMP_BITS) {
+                        data = mem[address + 1];
+                    }
+                    if ({1'b0, address}) <: (MemWords as ADDR_CMP_BITS) {
+                        mem[address] = (data & ~next_data_mask) | (next_write_data & next_data_mask);
+                    }
+                    if burst_count == '0 {
+                        state = State::s_write_delay;
+                    } else {
+                        burst_count -= 1;
+                    }
+                }
+                State::s_write_delay: {
+                    if delay == '0 {
+                        state = State::s_idle;
+                    } else {
+                        delay -= 1;
+                    }
+                }
+            }
+        }
+    }
+
+    assign sdrc.init_done = init_count == '0;
+    assign sdrc.busy_n    = (state == State::s_idle) || busy_assert_delay[0];
+    assign sdrc.rd_valid  = read_valid;
+    assign sdrc.data_read = data;
+    assign sdrc.wrd_ack   = '0;
+}

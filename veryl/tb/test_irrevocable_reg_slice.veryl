@@ -1,0 +1,72 @@
+// Unit test for irrevocable_reg_slice (util/irrevocable_reg_slice.veryl)
+// SPDX-License-Identifier: BSL-1.0
+
+#[test(test_irrevocable_reg_slice)]
+module test_irrevocable_reg_slice {
+    inst clk: $tb::clock_gen;
+    inst rst: $tb::reset_gen (
+        clk: clk,
+    );
+
+    inst s_in : stream_if::<stream_test_pkg::byte_t>;
+    inst s_out: stream_if::<stream_test_pkg::byte_t>;
+
+    inst dut: irrevocable_reg_slice::<stream_test_pkg::byte_t> (
+        i_clk : clk  ,
+        i_rst : rst  ,
+        i_data: s_in ,
+        o_data: s_out,
+    );
+
+    var received: logic<8>;
+
+    initial {
+        s_in.valid   = 1'b0;
+        s_in.payload = 8'h00;
+        s_out.ready  = 1'b0;
+        rst.assert  (clk);
+
+        // Empty after reset
+        $assert(s_out.valid == 1'b0, "must be empty after reset");
+        $assert(s_in.ready == 1'b1, "must accept after reset");
+
+        // Fill both entries while output is stalled
+        s_in.valid   = 1'b1;
+        s_in.payload = 8'h11;
+        clk.next    (1);
+        s_in.payload = 8'h22;
+        clk.next    (1);
+        s_in.valid   = 1'b0;
+
+        // Now full: input must be stalled, output must present first item
+        $assert(s_in.ready == 1'b0, "must be full after 2 writes");
+        $assert(s_out.valid == 1'b1);
+        $assert(s_out.payload == 8'h11, "FIFO order");
+
+        // Drain both entries
+        s_out.ready = 1'b1;
+        received    = s_out.payload;
+        $assert    (received == 8'h11);
+        clk.next   (1);
+        $assert    (s_out.valid == 1'b1);
+        $assert    (s_out.payload == 8'h22, "FIFO order");
+        clk.next   (1);
+        $assert    (s_out.valid == 1'b0, "must be empty after drain");
+        $assert    (s_in.ready == 1'b1);
+
+        // Simultaneous read/write passthrough at steady state
+        s_out.ready = 1'b1;
+        s_in.valid  = 1'b1;
+        for i in 0..8 {
+            s_in.payload = (8'h40 + i) as 8;
+            clk.next    (1);
+            $assert     (s_out.valid == 1'b1);
+            $assert     (s_out.payload == (8'h40 + i) as 8, "streaming order");
+        }
+        s_in.valid = 1'b0;
+        clk.next  (2);
+        $assert   (s_out.valid == 1'b0);
+
+        $finish();
+    }
+}

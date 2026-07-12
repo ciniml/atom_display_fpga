@@ -1,0 +1,187 @@
+// Unit test for frame_buffer_reader with tb_axi4_memory.
+// Geometry: 16x8 pixels (line stride 32 bytes), 16bpp; memory is
+// pre-filled with pixel(x,y) = 0xc000 + y*16 + x through the write
+// channels of the same AXI interface (unused by the reader).
+// Verifies windowed frame readout (start offset), start_of_frame /
+// end_of_line flags, trigger/active handshake, and 2x2 scaling by
+// pixel/line repetition.
+// SPDX-License-Identifier: BSL-1.0
+
+#[test(test_frame_buffer_reader)]
+#[allow(unassign_variable)]
+module test_frame_buffer_reader {
+    inst clk: $tb::clock_gen;
+    inst rst: $tb::reset_gen (
+        clk: clk,
+    );
+
+    inst axi   : axi4_if::<10, 32>;
+    inst s_data: stream_if::<video_pkg::VideoSignal>;
+
+    var trig  : logic                             ;
+    var active: logic                             ;
+    var cfg   : video_pkg::FrameBufferReaderConfig;
+
+    inst dut: frame_buffer_reader::<10, 16, 8, 8, 16> (
+        i_clk    : clk   ,
+        i_rst    : rst   ,
+        i_trigger: trig  ,
+        o_active : active,
+        i_config : cfg   ,
+        o_data   : s_data,
+        axi      : axi   ,
+    );
+
+    inst memory: tb_axi4_memory::<10, 32> #(
+        MemWords: 256,
+    ) (
+        i_clk: clk,
+        i_rst: rst,
+        axi  : axi,
+    );
+
+    var expected: logic<16>;
+    var src_x   : u32      ;
+    var src_y   : u32      ;
+
+    initial {
+        trig         = '0;
+        cfg.scale_x  = 1;
+        cfg.scale_y  = 1;
+        cfg.start_x  = '0;
+        cfg.start_y  = '0;
+        cfg.pixels_h = '0;
+        cfg.pixels_v = '0;
+        s_data.ready = '1;
+        // TB drives the write channels (unused by the reader)
+        axi.awvalid = '0;
+        axi.aw.addr = '0;
+        axi.aw.len  = '0;
+        axi.wvalid  = '0;
+        axi.w.data  = '0;
+        axi.w.strb  = '0;
+        axi.w.last  = '0;
+        axi.bready  = '1;
+        rst.assert (clk);
+        clk.next   (2);
+
+        // ---- Pre-fill lines 0..3 (words 0..31) ----
+        axi.awvalid = '1;
+        axi.aw.addr = 10'h000;
+        axi.aw.len  = 8'd31;
+        for _i in 0..20 {
+            if axi.awready {
+                break;
+            }
+            clk.next(1);
+        }
+        clk.next   (1);
+        axi.awvalid = '0;
+        axi.wvalid  = '1;
+        axi.w.strb  = 4'hf;
+        for w in 0..32 {
+            axi.w.data = (((32'hc000 + w * 2 + 1) << 16) | (32'hc000 + w * 2)) as 32;
+            axi.w.last = w == 31;
+            for _i in 0..20 {
+                if axi.wready {
+                    break;
+                }
+                clk.next(1);
+            }
+            clk.next(1);
+        }
+        axi.wvalid = '0;
+        for _i in 0..40 {
+            if axi.bvalid {
+                break;
+            }
+            clk.next(1);
+        }
+        $assert (axi.bvalid, "memory pre-fill must complete");
+        clk.next(2);
+
+        // ---- Frame 1: window 4x2 at (1,1), no scaling ----
+        cfg.start_x  = 1;
+        cfg.start_y  = 1;
+        cfg.pixels_h = 4;
+        cfg.pixels_v = 2;
+        cfg.scale_x  = 1;
+        cfg.scale_y  = 1;
+        clk.next    (1);
+        trig         = '1;
+        clk.next    (1);
+        trig         = '0;
+        for _i in 0..10 {
+            if active {
+                break;
+            }
+            clk.next(1);
+        }
+        $assert(active, "reader must become active after trigger");
+
+        for row in 0..2 {
+            for px in 0..4 {
+                for _i in 0..200 {
+                    if s_data.valid {
+                        break;
+                    }
+                    clk.next(1);
+                }
+                $assert (s_data.valid, "pixel must arrive");
+                expected = (16'hc000 + (1 + row) * 16 + 1 + px) as 16;
+                $assert (s_data.payload.pixel_data == expected, "windowed pixel must match memory");
+                $assert (s_data.payload.start_of_frame == (row == 0 && px == 0), "SOF only on the first pixel");
+                $assert (s_data.payload.end_of_line == (px == 3), "EOL on the last pixel of each line");
+                clk.next(1);
+            }
+        }
+        for _i in 0..200 {
+            if !active {
+                break;
+            }
+            clk.next(1);
+        }
+        $assert (!active, "reader must return to idle after the frame");
+        clk.next(2);
+
+        // ---- Frame 2: window 3x2 at (0,0), 2x2 scaling ----
+        cfg.start_x  = 0;
+        cfg.start_y  = 0;
+        cfg.pixels_h = 3;
+        cfg.pixels_v = 2;
+        cfg.scale_x  = 2;
+        cfg.scale_y  = 2;
+        clk.next    (1);
+        trig         = '1;
+        clk.next    (1);
+        trig         = '0;
+
+        // Output: each source line twice, each source pixel twice.
+        for out_y in 0..4 {
+            for out_x in 0..6 {
+                for _i in 0..200 {
+                    if s_data.valid {
+                        break;
+                    }
+                    clk.next(1);
+                }
+                $assert (s_data.valid, "scaled pixel must arrive");
+                src_x    = out_x / 2;
+                src_y    = out_y / 2;
+                expected = (16'hc000 + src_y * 16 + src_x) as 16;
+                $assert (s_data.payload.pixel_data == expected, "2x2 scaled pixels must repeat source pixels");
+                $assert (s_data.payload.end_of_line == (out_x == 5), "EOL on the last repeated pixel");
+                clk.next(1);
+            }
+        }
+        for _i in 0..200 {
+            if !active {
+                break;
+            }
+            clk.next(1);
+        }
+        $assert(!active, "reader must return to idle after the scaled frame");
+
+        $finish();
+    }
+}

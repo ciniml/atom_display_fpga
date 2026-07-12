@@ -1,0 +1,93 @@
+// axi4_reg_slice.veryl
+// Register slice on all five AXI4 channels to cut combinational paths.
+// Veryl port of fpga_samples axi4_regslice.scala (AXI4RegSlice).
+// SPDX-License-Identifier: BSL-1.0
+
+pub module axi4_reg_slice::<AddressBits: u32, DataBits: u32> (
+    i_clk: input   clock                                   ,
+    i_rst: input   reset                                   ,
+    i_axi: modport axi4_if::<AddressBits, DataBits>::slave ,
+    o_axi: modport axi4_if::<AddressBits, DataBits>::master,
+) {
+    inst ar_in : stream_if::<axi4_pkg::Axi4A::<AddressBits>>;
+    inst ar_out: stream_if::<axi4_pkg::Axi4A::<AddressBits>>;
+    inst r_in  : stream_if::<axi4_pkg::Axi4R::<DataBits>>;
+    inst r_out : stream_if::<axi4_pkg::Axi4R::<DataBits>>;
+    inst aw_in : stream_if::<axi4_pkg::Axi4A::<AddressBits>>;
+    inst aw_out: stream_if::<axi4_pkg::Axi4A::<AddressBits>>;
+    inst w_in  : stream_if::<axi4_pkg::Axi4W::<DataBits>>;
+    inst w_out : stream_if::<axi4_pkg::Axi4W::<DataBits>>;
+    inst b_in  : stream_if::<axi4_pkg::Axi4B>;
+    inst b_out : stream_if::<axi4_pkg::Axi4B>;
+
+    inst u_ar_slice: irrevocable_reg_slice::<axi4_pkg::Axi4A::<AddressBits>> (
+        i_clk : i_clk ,
+        i_rst : i_rst ,
+        i_data: ar_in ,
+        o_data: ar_out,
+    );
+    inst u_r_slice: irrevocable_reg_slice::<axi4_pkg::Axi4R::<DataBits>> (
+        i_clk : i_clk,
+        i_rst : i_rst,
+        i_data: r_in ,
+        o_data: r_out,
+    );
+    inst u_aw_slice: irrevocable_reg_slice::<axi4_pkg::Axi4A::<AddressBits>> (
+        i_clk : i_clk ,
+        i_rst : i_rst ,
+        i_data: aw_in ,
+        o_data: aw_out,
+    );
+    inst u_w_slice: irrevocable_reg_slice::<axi4_pkg::Axi4W::<DataBits>> (
+        i_clk : i_clk,
+        i_rst : i_rst,
+        i_data: w_in ,
+        o_data: w_out,
+    );
+    inst u_b_slice: irrevocable_reg_slice::<axi4_pkg::Axi4B> (
+        i_clk : i_clk,
+        i_rst : i_rst,
+        i_data: b_in ,
+        o_data: b_out,
+    );
+
+    // AR: master -> slave direction
+    assign ar_in.valid   = i_axi.arvalid;
+    assign ar_in.payload = i_axi.ar;
+    assign i_axi.arready = ar_in.ready;
+    assign o_axi.arvalid = ar_out.valid;
+    assign o_axi.ar      = ar_out.payload;
+    assign ar_out.ready  = o_axi.arready;
+
+    // R: slave -> master direction
+    assign r_in.valid   = o_axi.rvalid;
+    assign r_in.payload = o_axi.r;
+    assign o_axi.rready = r_in.ready;
+    assign i_axi.rvalid = r_out.valid;
+    assign i_axi.r      = r_out.payload;
+    assign r_out.ready  = i_axi.rready;
+
+    // AW: master -> slave direction
+    assign aw_in.valid   = i_axi.awvalid;
+    assign aw_in.payload = i_axi.aw;
+    assign i_axi.awready = aw_in.ready;
+    assign o_axi.awvalid = aw_out.valid;
+    assign o_axi.aw      = aw_out.payload;
+    assign aw_out.ready  = o_axi.awready;
+
+    // W: master -> slave direction
+    assign w_in.valid   = i_axi.wvalid;
+    assign w_in.payload = i_axi.w;
+    assign i_axi.wready = w_in.ready;
+    assign o_axi.wvalid = w_out.valid;
+    assign o_axi.w      = w_out.payload;
+    assign w_out.ready  = o_axi.wready;
+
+    // B: slave -> master direction
+    assign b_in.valid   = o_axi.bvalid;
+    assign b_in.payload = o_axi.b;
+    assign o_axi.bready = b_in.ready;
+    assign i_axi.bvalid = b_out.valid;
+    assign i_axi.b      = b_out.payload;
+    assign b_out.ready  = i_axi.bready;
+}

@@ -1,0 +1,133 @@
+// async_fifo.veryl
+// Asynchronous (dual-clock) FIFO with gray-coded pointers and 2FF
+// synchronizers. Read side has a 2-stage output pipeline (mem_data /
+// read_data) matching the Chisel original's timing behavior.
+// Veryl port of fpga_samples asyncfifo.scala (AsyncFIFO).
+// SPDX-License-Identifier: BSL-1.0
+
+pub module async_fifo::<T: type> #(
+    param DepthBits: u32 = 4,
+) (
+    // Write side ('w domain)
+    i_wclk     : input   'w clock                ,
+    i_wrst     : input   'w reset                ,
+    i_data     : modport 'w stream_if::<T>::slave,
+    o_half_full: output  'w logic                ,
+    // Read side ('r domain)
+    i_rclk: input   'r clock                 ,
+    i_rrst: input   'r reset                 ,
+    o_data: modport 'r stream_if::<T>::master,
+) {
+    const INDEX_BITS: u32 = DepthBits + 1;
+    const DEPTH     : u32 = 1 << DepthBits;
+    const HALF_DEPTH: u32 = 1 << (DepthBits - 1);
+
+    function bin2gray (
+        bin: input logic<INDEX_BITS>,
+    ) -> logic<INDEX_BITS> {
+        return bin ^ (bin >> 1);
+    }
+
+    function gray2bin (
+        gray: input logic<INDEX_BITS>,
+    ) -> logic<INDEX_BITS> {
+        var bin                : logic<INDEX_BITS>;
+        bin[INDEX_BITS - 1] = gray[INDEX_BITS - 1];
+        for i in 1..INDEX_BITS {
+            let idx     : u32 = INDEX_BITS - 1 - i;
+            bin[idx] = bin[idx + 1] ^ gray[idx];
+        }
+        return bin;
+    }
+
+    var mem: T [DEPTH];
+
+    // ---- Read domain ----
+    var r_index        : 'r logic<INDEX_BITS>;
+    var w_index_gray_ff: 'r logic<INDEX_BITS>; // 2FF synchronizer: 'w gray pointer -> 'r
+    var w_index_gray_r : 'r logic<INDEX_BITS>;
+
+    let r_index_gray: 'r logic<INDEX_BITS> = bin2gray(r_index);
+    let empty       : 'r logic             = w_index_gray_r == r_index_gray;
+
+    var read_data     : 'r T    ;
+    var read_valid    : 'r logic;
+    var mem_data      : 'r T    ;
+    var mem_data_valid: 'r logic;
+
+    // ---- Write domain ----
+    var w_index        : 'w logic<INDEX_BITS>;
+    var r_index_gray_ff: 'w logic<INDEX_BITS>; // 2FF synchronizer: 'r gray pointer -> 'w
+    var r_index_gray_w : 'w logic<INDEX_BITS>;
+
+    let w_index_gray: 'w logic<INDEX_BITS> = bin2gray(w_index);
+    let r_index_sync: 'w logic<INDEX_BITS> = gray2bin(r_index_gray_w);
+    let full        : 'w logic             = (r_index_sync[DepthBits - 1:0] == w_index[DepthBits - 1:0])
+        && (r_index_sync[DepthBits] != w_index[DepthBits]);
+
+    unsafe (cdc) {
+        // Read-side control
+        always_ff (i_rclk, i_rrst) {
+            if_reset {
+                r_index         = '0;
+                read_valid      = '0;
+                mem_data_valid  = '0;
+                w_index_gray_ff = '0;
+                w_index_gray_r  = '0;
+            } else {
+                w_index_gray_ff = w_index_gray;
+                w_index_gray_r  = w_index_gray_ff;
+
+                if read_valid && o_data.ready {
+                    read_valid = '0;
+                }
+                if mem_data_valid && (!read_valid || (read_valid && o_data.ready)) {
+                    read_valid     = '1;
+                    mem_data_valid = '0;
+                }
+                if !empty && (!mem_data_valid || !read_valid || (read_valid && o_data.ready)) {
+                    mem_data_valid =  '1;
+                    r_index        += 1;
+                }
+            }
+        }
+
+        // Read-side data pipeline (no reset, like Chisel's Reg(gen))
+        always_ff (i_rclk) {
+            if mem_data_valid && (!read_valid || (read_valid && o_data.ready)) {
+                read_data = mem_data;
+            }
+            if !empty && (!mem_data_valid || !read_valid || (read_valid && o_data.ready)) {
+                mem_data = mem[r_index[DepthBits - 1:0]];
+            }
+        }
+
+        // Write-side control
+        always_ff (i_wclk, i_wrst) {
+            if_reset {
+                w_index         = '0;
+                r_index_gray_ff = '0;
+                r_index_gray_w  = '0;
+            } else {
+                r_index_gray_ff = r_index_gray;
+                r_index_gray_w  = r_index_gray_ff;
+
+                if i_data.valid && i_data.ready {
+                    w_index += 1;
+                }
+            }
+        }
+
+        // Write-side memory (no reset)
+        always_ff (i_wclk) {
+            if i_data.valid && i_data.ready {
+                mem[w_index[DepthBits - 1:0]] = i_data.payload;
+            }
+        }
+    }
+
+    assign o_data.valid   = read_valid;
+    assign o_data.payload = read_data;
+    assign i_data.ready   = ~full;
+    assign o_half_full    = ((w_index[DepthBits - 1:0] - r_index_sync[DepthBits - 1:0]) >= HALF_DEPTH) || full;
+}

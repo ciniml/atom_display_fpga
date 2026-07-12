@@ -1,0 +1,60 @@
+// sdrc_if.veryl
+// GOWIN SDRAM controller (SDRC) command interface.
+// Veryl port of fpga_samples gowin/sdram.scala (SDRAMBridgeParams / SDRCIO).
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+/// SDRC interface, parameterized like Chisel's SDRAMBridgeParams:
+/// word address width, data bytes per word, and max burst length in words.
+pub interface sdrc_if::<AddressBits: u32, DataBytes: u32, MaxBurstLength: u32> {
+    const DATA_BITS        : u32 = DataBytes * 8;
+    const BURST_LENGTH_BITS: u32 = $clog2(MaxBurstLength);
+    const DATA_LEN_BITS    : u32 = $clog2(MaxBurstLength + 1);
+
+    var self_refresh: logic               ;
+    var power_down  : logic               ;
+    var wr_n        : logic               ;
+    var rd_n        : logic               ;
+    var addr        : logic<AddressBits>  ;
+    var data_len    : logic<DATA_LEN_BITS>;
+    var dqm         : logic<DataBytes>    ;
+    var data_read   : logic<DATA_BITS>    ;
+    var data_write  : logic<DATA_BITS>    ;
+    var init_done   : logic               ;
+    var busy_n      : logic               ;
+    var rd_valid    : logic               ;
+    var wrd_ack     : logic               ;
+
+    /// User-logic side driving the SDRC (Chisel: SDRCIO output direction)
+    modport host {
+        self_refresh: output,
+        power_down  : output,
+        wr_n        : output,
+        rd_n        : output,
+        addr        : output,
+        data_len    : output,
+        dqm         : output,
+        data_read   : input ,
+        data_write  : output,
+        init_done   : input ,
+        busy_n      : input ,
+        rd_valid    : input ,
+        wrd_ack     : input ,
+    }
+
+    /// SDRC IP side (Chisel: Flipped(SDRCIO); used by SimSDRC model)
+    modport device {
+        self_refresh: input ,
+        power_down  : input ,
+        wr_n        : input ,
+        rd_n        : input ,
+        addr        : input ,
+        data_len    : input ,
+        dqm         : input ,
+        data_read   : output,
+        data_write  : input ,
+        init_done   : output,
+        busy_n      : output,
+        rd_valid    : output,
+        wrd_ack     : output,
+    }
+}

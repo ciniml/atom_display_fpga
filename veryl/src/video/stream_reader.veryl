@@ -1,0 +1,113 @@
+// stream_reader.veryl
+// Reads a rectangular region of the frame buffer, line by line, into a
+// pixel stream. Supports backward (bottom-up) transfers for overlapping
+// COPYRECT operations.
+// Veryl port of fpga_samples stream_reader.scala (StreamReader).
+// SPDX-License-Identifier: BSL-1.0
+
+pub module stream_reader::<AddressBits: u32, MaxWidth: u32, MaxHeight: u32, BurstPixels: u32, MaxBurstLength: u32> (
+    i_clk          : input   clock                                                             ,
+    i_rst          : input   reset                                                             ,
+    i_command_valid: input   logic                                                             ,
+    o_command_ready: output  logic                                                             ,
+    i_command      : input   video_pkg::StreamReaderCommand::<AddressBits, MaxWidth, MaxHeight>,
+    o_data         : modport stream_if::<video_pkg::VideoSignal>::master                       ,
+    axi            : modport axi4_if::<AddressBits, 32>::read_master                           ,
+    o_busy         : output  logic                                                             ,
+) {
+    const PIXEL_BYTES      : u32 = video_pkg::PIXEL_BYTES;
+    const LINE_STRIDE_BYTES: u32 = PIXEL_BYTES * MaxWidth;
+    const COUNT_V_BITS     : u32 = $clog2(MaxHeight + 1);
+
+    enum State: logic<2> {
+        s_idle,
+        s_decode,
+        s_running,
+    }
+    var state: State;
+
+    var command: video_pkg::StreamReaderCommand::<AddressBits, MaxWidth, MaxHeight>;
+
+    var line_command      : video_pkg::LineReaderCommand::<AddressBits, MaxWidth>;
+    var line_command_valid: logic                                                ;
+    var line_command_ready: logic                                                ;
+    var line_busy         : logic                                                ;
+
+    inst u_line_reader: line_reader::<AddressBits, MaxWidth, BurstPixels, MaxBurstLength> (
+        i_clk          : i_clk             ,
+        i_rst          : i_rst             ,
+        i_command_valid: line_command_valid,
+        o_command_ready: line_command_ready,
+        i_command      : line_command      ,
+        o_data         : o_data            ,
+        axi            : axi               ,
+        o_busy         : line_busy         ,
+    );
+
+    var line_start_address: logic<AddressBits> ;
+    var lines_remaining   : logic<COUNT_V_BITS>;
+    var line_busy_prev    : logic              ;
+    var is_backward       : logic              ;
+
+    let calculated_line_start: logic<AddressBits> = command.address_offset
+        + ((command.start_y * LINE_STRIDE_BYTES) as AddressBits) + (({command.start_x, 1'b0}) as AddressBits);
+
+    assign o_busy          = state != State::s_idle;
+    assign o_command_ready = state == State::s_idle;
+
+    always_ff {
+        if_reset {
+            state              = State::s_idle;
+            command            = 0 as video_pkg::StreamReaderCommand::<AddressBits, MaxWidth, MaxHeight>;
+            line_command       = 0 as video_pkg::LineReaderCommand::<AddressBits, MaxWidth>;
+            line_command_valid = '0;
+            line_start_address = '0;
+            lines_remaining    = '0;
+            line_busy_prev     = '0;
+            is_backward        = '0;
+        } else {
+            line_busy_prev = line_busy;
+            if line_command_valid && line_command_ready {
+                line_command_valid = '0;
+            }
+
+            case state {
+                State::s_idle: {
+                    if i_command_valid && o_command_ready {
+                        command     = i_command;
+                        is_backward = i_command.start_y >: i_command.end_y_inclusive;
+                        state       = State::s_decode;
+                    }
+                }
+                State::s_decode: {
+                    line_command.count = command.end_x_inclusive - command.start_x + 1;
+                    line_start_address = calculated_line_start;
+                    lines_remaining    = if is_backward ?
+                        command.start_y - command.end_y_inclusive + 1
+                    :
+                        command.end_y_inclusive - command.start_y + 1
+                    ;
+                    state              = State::s_running;
+                }
+                State::s_running: {
+                    if lines_remaining == '0 {
+                        if !line_command_valid && line_busy_prev && !line_busy {
+                            state = State::s_idle;
+                        }
+                    } else {
+                        if !line_command_valid || line_command_ready {
+                            line_command.start_address = line_start_address;
+                            line_command_valid         = '1;
+                            lines_remaining            = lines_remaining - 1;
+                            line_start_address         = if is_backward ?
+                                line_start_address - (LINE_STRIDE_BYTES as AddressBits)
+                            :
+                                line_start_address + (LINE_STRIDE_BYTES as AddressBits)
+                            ;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

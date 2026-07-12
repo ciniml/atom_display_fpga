@@ -1,0 +1,43 @@
+// irrevocable_reg_slice.veryl
+// Register slice (2-entry FIFO) for valid/ready streams, used to cut
+// combinational paths between stream stages.
+// Veryl port of fpga_samples regslice.scala (IrrevocableRegSlice).
+// SPDX-License-Identifier: BSL-1.0
+
+pub module irrevocable_reg_slice::<T: type> (
+    i_clk : input   clock                 ,
+    i_rst : input   reset                 ,
+    i_data: modport stream_if::<T>::slave ,
+    o_data: modport stream_if::<T>::master,
+) {
+    var rp    : logic<2>    ;
+    var wp    : logic<2>    ;
+    var buffer: T        [2];
+
+    let empty: logic = rp == wp;
+    let full : logic = (rp[1] != wp[1]) && (rp[0] == wp[0]);
+
+    always_ff {
+        if i_data.valid && i_data.ready {
+            buffer[wp[0]] = i_data.payload;
+        }
+    }
+
+    always_ff {
+        if_reset {
+            rp = '0;
+            wp = '0;
+        } else {
+            if i_data.valid && i_data.ready {
+                wp += 1;
+            }
+            if o_data.valid && o_data.ready {
+                rp += 1;
+            }
+        }
+    }
+
+    assign i_data.ready   = ~full;
+    assign o_data.valid   = ~empty;
+    assign o_data.payload = buffer[rp[0]];
+}

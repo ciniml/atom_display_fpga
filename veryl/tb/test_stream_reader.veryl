@@ -1,0 +1,177 @@
+// Unit test for stream_reader / line_reader with tb_axi4_memory.
+// Geometry: 16x8 pixels (line stride 32 bytes), 16bpp. The test
+// pre-fills memory through the same AXI interface's write channels
+// (unused by the reader), then reads rectangles forward and backward
+// (the backward path is what COPYRECT uses for overlapping moves).
+// SPDX-License-Identifier: BSL-1.0
+
+#[test(test_stream_reader)]
+#[allow(unassign_variable)]
+module test_stream_reader {
+    inst clk: $tb::clock_gen;
+    inst rst: $tb::reset_gen (
+        clk: clk,
+    );
+
+    inst axi   : axi4_if::<10, 32>;
+    inst s_data: stream_if::<video_pkg::VideoSignal>;
+
+    var cmd_valid: logic                                      ;
+    var cmd_ready: logic                                      ;
+    var cmd      : video_pkg::StreamReaderCommand::<10, 16, 8>;
+    var busy     : logic                                      ;
+
+    inst dut: stream_reader::<10, 16, 8, 8, 16> (
+        i_clk          : clk      ,
+        i_rst          : rst      ,
+        i_command_valid: cmd_valid,
+        o_command_ready: cmd_ready,
+        i_command      : cmd      ,
+        o_data         : s_data   ,
+        axi            : axi      ,
+        o_busy         : busy     ,
+    );
+
+    inst memory: tb_axi4_memory::<10, 32> #(
+        MemWords: 256,
+    ) (
+        i_clk: clk,
+        i_rst: rst,
+        axi  : axi,
+    );
+
+    var expected: logic<16>;
+
+    initial {
+        cmd_valid           = '0;
+        cmd.address_offset  = '0;
+        cmd.start_x         = '0;
+        cmd.end_x_inclusive = '0;
+        cmd.start_y         = '0;
+        cmd.end_y_inclusive = '0;
+        s_data.ready        = '1;
+        // TB drives the write channels (unused by the reader)
+        axi.awvalid = '0;
+        axi.aw.addr = '0;
+        axi.aw.len  = '0;
+        axi.wvalid  = '0;
+        axi.w.data  = '0;
+        axi.w.strb  = '0;
+        axi.w.last  = '0;
+        axi.bready  = '1;
+        rst.assert (clk);
+        clk.next   (2);
+
+        // ---- Pre-fill lines 0..1 (words 0..15): pixel(x,y) = 0xb000 + y*16 + x ----
+        axi.awvalid = '1;
+        axi.aw.addr = 10'h000;
+        axi.aw.len  = 8'd15;
+        for _i in 0..20 {
+            if axi.awready {
+                break;
+            }
+            clk.next(1);
+        }
+        clk.next   (1);
+        axi.awvalid = '0;
+        axi.wvalid  = '1;
+        axi.w.strb  = 4'hf;
+        for w in 0..16 {
+            axi.w.data = (((32'hb000 + w * 2 + 1) << 16) | (32'hb000 + w * 2)) as 32;
+            axi.w.last = w == 15;
+            for _i in 0..20 {
+                if axi.wready {
+                    break;
+                }
+                clk.next(1);
+            }
+            clk.next(1);
+        }
+        axi.wvalid = '0;
+        for _i in 0..40 {
+            if axi.bvalid {
+                break;
+            }
+            clk.next(1);
+        }
+        $assert (axi.bvalid, "memory pre-fill must complete");
+        clk.next(2);
+
+        // ---- Forward read: x=1..6, y=0..1 ----
+        cmd.start_x         = 1;
+        cmd.end_x_inclusive = 6;
+        cmd.start_y         = 0;
+        cmd.end_y_inclusive = 1;
+        cmd_valid           = '1;
+        for _i in 0..10 {
+            if cmd_ready {
+                break;
+            }
+            clk.next(1);
+        }
+        $assert  (cmd_ready, "read command must be accepted");
+        clk.next (1);
+        cmd_valid = '0;
+
+        for row in 0..2 {
+            for px in 0..6 {
+                for _i in 0..100 {
+                    if s_data.valid {
+                        break;
+                    }
+                    clk.next(1);
+                }
+                $assert (s_data.valid, "pixel must arrive");
+                expected = (16'hb000 + row * 16 + 1 + px) as 16;
+                $assert (s_data.payload.pixel_data == expected, "forward read pixel must match");
+                $assert (s_data.payload.end_of_line == (px == 5), "end_of_line on last pixel of each line");
+                clk.next(1);
+            }
+        }
+        for _i in 0..100 {
+            if !busy {
+                break;
+            }
+            clk.next(1);
+        }
+        $assert (!busy, "forward read must complete");
+        clk.next(2);
+
+        // ---- Backward read: x=1..6, y=1 down to y=0 ----
+        cmd.start_y         = 1;
+        cmd.end_y_inclusive = 0;
+        cmd_valid           = '1;
+        for _i in 0..10 {
+            if cmd_ready {
+                break;
+            }
+            clk.next(1);
+        }
+        clk.next (1);
+        cmd_valid = '0;
+
+        for row in 0..2 {
+            for px in 0..6 {
+                for _i in 0..100 {
+                    if s_data.valid {
+                        break;
+                    }
+                    clk.next(1);
+                }
+                $assert (s_data.valid, "pixel must arrive (backward)");
+                expected = (16'hb000 + (1 - row) * 16 + 1 + px) as 16;
+                $assert (s_data.payload.pixel_data == expected, "backward read must deliver line 1 then line 0");
+                clk.next(1);
+            }
+        }
+        for _i in 0..100 {
+            if !busy {
+                break;
+            }
+            clk.next(1);
+        }
+        $assert(!busy, "backward read must complete");
+
+        $finish();
+    }
+}

@@ -1,0 +1,36 @@
+// Unit test for graycode_pkg (util/graycode_pkg.veryl)
+// SPDX-License-Identifier: BSL-1.0
+
+#[test(test_graycode)]
+module test_graycode {
+    var bin      : logic<5>;
+    var gray     : logic<5>;
+    var gray_prev: logic<5>;
+    var diff     : logic<5>;
+    var back     : logic<5>;
+
+    initial {
+        // Roundtrip over the full 5-bit space, and adjacent gray codes
+        // must differ in exactly one bit.
+        for i in 0..32 {
+            bin     = i as 5;
+            gray    = graycode_pkg::bin2gray::<5>(bin);
+            back    = graycode_pkg::gray2bin::<5>(gray);
+            $assert(back == bin, "gray2bin(bin2gray(x)) != x");
+            if i >: 0 {
+                diff    = gray ^ gray_prev;
+                $assert(diff != 5'd0, "adjacent gray codes must differ");
+                $assert((diff & (diff - 5'd1)) == 5'd0, "adjacent gray codes must differ in exactly one bit");
+            }
+            gray_prev = gray;
+        }
+
+        // Known values for width 4
+        $assert(graycode_pkg::bin2gray::<4>(4'b0000) == 4'b0000);
+        $assert(graycode_pkg::bin2gray::<4>(4'b0001) == 4'b0001);
+        $assert(graycode_pkg::bin2gray::<4>(4'b0010) == 4'b0011);
+        $assert(graycode_pkg::bin2gray::<4>(4'b0111) == 4'b0100);
+        $assert(graycode_pkg::bin2gray::<4>(4'b1000) == 4'b1100);
+        $finish();
+    }
+}

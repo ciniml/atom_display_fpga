@@ -1,0 +1,26 @@
+// graycode_pkg.veryl
+// Gray code conversion functions.
+// Veryl port of fpga_samples graycode.scala (Bin2Gray / Gray2Bin).
+// The Chisel originals are modules; pure combinational conversions are
+// more naturally expressed as generic functions in Veryl.
+// SPDX-License-Identifier: BSL-1.0
+
+pub package graycode_pkg {
+    function bin2gray::<Width: u32> (
+        bin: input logic<Width>,
+    ) -> logic<Width> {
+        return bin ^ (bin >> 1);
+    }
+
+    function gray2bin::<Width: u32> (
+        gray: input logic<Width>,
+    ) -> logic<Width> {
+        var bin           : logic<Width>;
+        bin[Width - 1] = gray[Width - 1];
+        for i in 1..Width {
+            let idx     : u32 = Width - 1 - i;
+            bin[idx] = bin[idx + 1] ^ gray[idx];
+        }
+        return bin;
+    }
+}

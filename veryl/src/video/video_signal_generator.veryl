@@ -1,0 +1,279 @@
+// video_signal_generator.veryl
+// Generates HSYNC/VSYNC/DE video timing from a runtime-reconfigurable
+// VideoConfig, consuming a pixel stream with resynchronization on frame
+// boundaries, and up to 8x8 pixel multiplication (scaling) using a line
+// buffer. Runs entirely in the video clock domain.
+// Veryl port of fpga_samples video.scala (VideoSignalGenerator).
+// The Default* parameters correspond to Chisel's defaultVideoParams
+// (the design uses the 720p preset).
+// SPDX-License-Identifier: BSL-1.0
+
+pub module video_signal_generator::<MaxMultiplierH: u32, MaxMultiplierV: u32> #(
+    param DefaultBackPorchV : u32 = 20  ,
+    param DefaultPixelsV    : u32 = 720 ,
+    param DefaultFrontPorchV: u32 = 5   ,
+    param DefaultPulseWidthV: u32 = 5   ,
+    param DefaultBackPorchH : u32 = 220 ,
+    param DefaultPixelsH    : u32 = 1280,
+    param DefaultFrontPorchH: u32 = 110 ,
+    param DefaultPulseWidthH: u32 = 40  ,
+) (
+    i_clk              : input   clock                                       ,
+    i_rst              : input   reset                                       ,
+    i_data             : modport stream_if::<video_pkg::VideoSignal>::slave  ,
+    o_video            : output  video_pkg::VideoIO                          ,
+    o_trigger_frame    : output  logic                                       ,
+    o_data_in_sync     : output  logic                                       ,
+    i_config_valid     : input   logic                                       ,
+    i_config           : input   video_pkg::VideoConfig                      ,
+    i_mult_config_valid: input   logic                                       ,
+    i_mult_config      : input   video_pkg::VideoMultiplicationConfig::<8, 8>,
+    o_v_active         : output  logic                                       ,
+) {
+    const MAX_WIDTH      : u32 = video_pkg::MAX_PIXELS_H;
+    const MAX_HEIGHT     : u32 = video_pkg::MAX_PIXELS_V;
+    const ACTIVE_H_BITS  : u32 = $clog2(MAX_WIDTH);
+    const ACTIVE_V_BITS  : u32 = $clog2(MAX_HEIGHT);
+    const INACTIVE_H_BITS: u32 = $clog2(video_pkg::MAX_FRONT_PORCH_H + 1); // max(back, front, pulse) = front porch
+    const INACTIVE_V_BITS: u32 = $clog2(video_pkg::MAX_FRONT_PORCH_V + 1);
+    const MULT_BITS      : u32 = $clog2(MaxMultiplierH);
+
+    enum TState: logic<2> {
+        s_sync,
+        s_back,
+        s_active,
+        s_front,
+    }
+
+    var next_video_config: video_pkg::VideoConfig                                                ;
+    var video_config     : video_pkg::VideoConfig                                                ;
+    var next_mult_config : video_pkg::VideoMultiplicationConfig::<MaxMultiplierH, MaxMultiplierV>;
+    var mult_config      : video_pkg::VideoMultiplicationConfig::<MaxMultiplierH, MaxMultiplierV>;
+
+    var state_h: TState;
+    var state_v: TState;
+
+    var active_counter_h  : logic<ACTIVE_H_BITS>  ;
+    var active_counter_v  : logic<ACTIVE_V_BITS>  ;
+    var inactive_counter_h: logic<INACTIVE_H_BITS>;
+    var inactive_counter_v: logic<INACTIVE_V_BITS>;
+    var multiplier_h      : logic<MULT_BITS>      ;
+    var multiplier_v      : logic<MULT_BITS>      ;
+
+    // Line buffer for vertical pixel multiplication
+    var multiplier_buffer: logic<video_pkg::PIXEL_BITS> [MAX_WIDTH];
+    var pixel_from_buffer: logic<video_pkg::PIXEL_BITS>            ;
+
+    let next_active_counter_h: logic<ACTIVE_H_BITS> = if active_counter_h
+        == ((video_config.pixels_h - 1) as ACTIVE_H_BITS) ?
+        '0
+    :
+        active_counter_h + 1
+    ;
+
+    var data        : logic<video_pkg::PIXEL_BITS>;
+    var data_in_sync: logic                       ;
+
+    // Pixel consumed this cycle (also the buffer-write condition)
+    let consume_pixel: logic = (state_h == TState::s_active) && (state_v == TState::s_active) && (multiplier_v == '0);
+    let first_of_mult: logic = consume_pixel && (multiplier_h == '0);
+
+    var data_ready: logic;
+    always_comb {
+        data_ready = !data_in_sync && !i_data.payload.start_of_frame;
+        if first_of_mult {
+            data_ready = '1;
+        }
+    }
+    assign i_data.ready = data_ready;
+
+    let pixel_mux: logic<video_pkg::PIXEL_BITS> = if i_data.valid && data_in_sync ? i_data.payload.pixel_data : '0;
+
+    let advance_v : logic = (state_h == TState::s_front)
+        && (inactive_counter_h == ((video_config.front_porch_h - 1) as INACTIVE_H_BITS));
+    let next_frame: logic = (state_v == TState::s_front) && advance_v
+        && (inactive_counter_v == ((video_config.front_porch_v - 1) as INACTIVE_V_BITS));
+
+    var data_enable_reg: logic;
+    var h_sync         : logic;
+    var v_sync         : logic;
+    var trigger_frame  : logic;
+    var v_active       : logic;
+
+    always_ff {
+        if_reset {
+            next_video_config             = video_pkg::config_value(
+                DefaultBackPorchV,
+                DefaultPixelsV,
+                DefaultFrontPorchV,
+                DefaultPulseWidthV,
+                DefaultBackPorchH,
+                DefaultPixelsH,
+                DefaultFrontPorchH,
+                DefaultPulseWidthH,
+            );
+            video_config                  = video_pkg::config_value(
+                DefaultBackPorchV,
+                DefaultPixelsV,
+                DefaultFrontPorchV,
+                DefaultPulseWidthV,
+                DefaultBackPorchH,
+                DefaultPixelsH,
+                DefaultFrontPorchH,
+                DefaultPulseWidthH,
+            );
+            next_mult_config.multiplier_h = 1;
+            next_mult_config.multiplier_v = 1;
+            mult_config.multiplier_h      = 1;
+            mult_config.multiplier_v      = 1;
+            state_h                       = TState::s_sync;
+            state_v                       = TState::s_sync;
+            active_counter_h              = '0;
+            active_counter_v              = '0;
+            inactive_counter_h            = '0;
+            inactive_counter_v            = '0;
+            multiplier_h                  = '0;
+            multiplier_v                  = '0;
+            data                          = '0;
+            data_in_sync                  = '0;
+            data_enable_reg               = '0;
+            h_sync                        = '0;
+            v_sync                        = '0;
+            trigger_frame                 = '1; // Chisel: RegInit(true.B)
+            v_active                      = '0;
+        } else {
+            // Horizontal state machine
+            case state_h {
+                TState::s_sync: {
+                    inactive_counter_h += 1;
+                    if inactive_counter_h == ((video_config.pulse_width_h - 1) as INACTIVE_H_BITS) {
+                        state_h            = TState::s_back;
+                        inactive_counter_h = '0;
+                    }
+                    multiplier_h = '0;
+                }
+                TState::s_back: {
+                    inactive_counter_h += 1;
+                    if inactive_counter_h == ((video_config.back_porch_h - 1) as INACTIVE_H_BITS) {
+                        state_h            = TState::s_active;
+                        inactive_counter_h = '0;
+                    }
+                }
+                TState::s_active: {
+                    active_counter_h += 1;
+                    if active_counter_h == ((video_config.pixels_h - 1) as ACTIVE_H_BITS) {
+                        state_h          = TState::s_front;
+                        active_counter_h = '0;
+                    }
+                    if state_v == TState::s_active {
+                        if multiplier_v == '0 {
+                            multiplier_h += 1;
+                            if multiplier_h == ((mult_config.multiplier_h - 1) as MULT_BITS) {
+                                multiplier_h = '0;
+                            }
+                            if multiplier_h == '0 {
+                                // First pixel of the multiplication: consume the stream
+                                data_in_sync = i_data.valid;
+                                data         = pixel_mux;
+                            }
+                        } else {
+                            data = pixel_from_buffer;
+                        }
+                    }
+                }
+                TState::s_front: {
+                    inactive_counter_h += 1;
+                    if inactive_counter_h == ((video_config.front_porch_h - 1) as INACTIVE_H_BITS) {
+                        state_h            = TState::s_sync;
+                        inactive_counter_h = '0;
+                    }
+                }
+            }
+
+            // Vertical state machine (advances at end of each line)
+            case state_v {
+                TState::s_sync: {
+                    if advance_v {
+                        inactive_counter_v += 1;
+                        if inactive_counter_v == ((video_config.pulse_width_v - 1) as INACTIVE_V_BITS) {
+                            state_v            = TState::s_back;
+                            inactive_counter_v = '0;
+                        }
+                        multiplier_v = '0;
+                    }
+                }
+                TState::s_back: {
+                    if advance_v {
+                        inactive_counter_v += 1;
+                        if inactive_counter_v == ((video_config.back_porch_v - 1) as INACTIVE_V_BITS) {
+                            state_v            = TState::s_active;
+                            inactive_counter_v = '0;
+                        }
+                    }
+                }
+                TState::s_active: {
+                    if advance_v {
+                        active_counter_v += 1;
+                        if active_counter_v == ((video_config.pixels_v - 1) as ACTIVE_V_BITS) {
+                            state_v          = TState::s_front;
+                            active_counter_v = '0;
+                        }
+                        multiplier_v += 1;
+                        if multiplier_v == ((mult_config.multiplier_v - 1) as MULT_BITS) {
+                            multiplier_v = '0;
+                        }
+                    }
+                }
+                TState::s_front: {
+                    if advance_v {
+                        inactive_counter_v += 1;
+                        if inactive_counter_v == ((video_config.front_porch_v - 1) as INACTIVE_V_BITS) {
+                            state_v            = TState::s_sync;
+                            inactive_counter_v = '0;
+                        }
+                    }
+                }
+            }
+
+            // Registered output timing signals
+            data_enable_reg = (state_h == TState::s_active) && (state_v == TState::s_active);
+            h_sync          = state_h == TState::s_sync;
+            v_sync          = state_v == TState::s_sync;
+            v_active        = state_v == TState::s_active;
+
+            // Config double buffering: update at frame boundaries
+            if i_config_valid {
+                next_video_config = i_config;
+            }
+            if i_mult_config_valid {
+                next_mult_config = i_mult_config;
+            }
+            trigger_frame = '0;
+            if next_frame {
+                video_config  = next_video_config;
+                mult_config   = next_mult_config;
+                trigger_frame = '1;
+            }
+        }
+    }
+
+    // Line buffer (no reset)
+    always_ff {
+        if consume_pixel {
+            if multiplier_h == '0 {
+                multiplier_buffer[active_counter_h] = pixel_mux;
+            } else {
+                multiplier_buffer[active_counter_h] = data;
+            }
+        }
+        pixel_from_buffer = multiplier_buffer[next_active_counter_h];
+    }
+
+    assign o_trigger_frame     = trigger_frame;
+    assign o_v_active          = v_active;
+    assign o_data_in_sync      = data_in_sync;
+    assign o_video.h_sync      = h_sync;
+    assign o_video.v_sync      = v_sync;
+    assign o_video.data_enable = data_enable_reg;
+    assign o_video.pixel_data  = if data_enable_reg ? data : '0;
+}

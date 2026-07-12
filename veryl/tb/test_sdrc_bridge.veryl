@@ -1,0 +1,253 @@
+// Integration test for sdrc_bridge (sdram/sdrc_bridge.veryl) with the
+// tb_sim_sdrc SDRAM controller model: burst writes and reads through
+// the full AXI -> SDRC -> memory path, including the SDRC's read
+// latency and delayed busy_n behavior.
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+#[test(test_sdrc_bridge)]
+#[allow(unassign_variable)]
+module test_sdrc_bridge {
+    inst clk: $tb::clock_gen;
+    inst rst: $tb::reset_gen (
+        clk: clk,
+    );
+
+    inst axi : axi4_if::<18, 32>;
+    inst sdrc: sdrc_if::<16, 4, 80>;
+
+    inst dut: sdrc_bridge::<18, 16, 4, 32, 80> (
+        i_clk: clk ,
+        i_rst: rst ,
+        axi  : axi ,
+        sdrc : sdrc,
+    );
+
+    inst memory: tb_sim_sdrc::<16, 4, 32, 80> #(
+        MemWords: 1024,
+    ) (
+        i_clk: clk ,
+        i_rst: rst ,
+        sdrc : sdrc,
+    );
+
+    var beats: u32;
+
+    initial {
+        axi.arvalid = '0;
+        axi.ar.addr = '0;
+        axi.ar.len  = '0;
+        axi.rready  = '1;
+        axi.awvalid = '0;
+        axi.aw.addr = '0;
+        axi.aw.len  = '0;
+        axi.wvalid  = '0;
+        axi.w.data  = '0;
+        axi.w.strb  = '0;
+        axi.w.last  = '0;
+        axi.bready  = '1;
+        rst.assert (clk);
+
+        // Wait for the SDRC init (100 cycles) to finish
+        for _i in 0..150 {
+            clk.next(1);
+            if sdrc.init_done {
+                break;
+            }
+        }
+        $assert (sdrc.init_done, "SDRC must finish initialization");
+        clk.next(4);
+
+        // ---- 8-beat burst write to word address 0x20 (byte 0x80) ----
+        axi.awvalid = '1;
+        axi.aw.addr = 18'h00080;
+        axi.aw.len  = 8'd7;
+        for _i in 0..20 {
+            if axi.awready {
+                break;
+            }
+            clk.next(1);
+        }
+        $assert    (axi.awready, "AW must be accepted");
+        clk.next   (1);
+        axi.awvalid = '0;
+
+        axi.wvalid = '1;
+        axi.w.strb = 4'hf;
+        for b in 0..8 {
+            axi.w.data = (32'h5d00_0000 + b) as 32;
+            axi.w.last = b == 7;
+            for _i in 0..40 {
+                if axi.wready {
+                    break;
+                }
+                clk.next(1);
+            }
+            $assert (axi.wready, "W beat must be accepted");
+            clk.next(1);
+        }
+        axi.wvalid = '0;
+
+        for _i in 0..100 {
+            if axi.bvalid {
+                break;
+            }
+            clk.next(1);
+        }
+        $assert (axi.bvalid, "B response must arrive");
+        $assert (axi.b.resp == axi4_pkg::Axi4Resp::okay);
+        clk.next(2);
+
+        // ---- 8-beat burst read back ----
+        axi.arvalid = '1;
+        axi.ar.addr = 18'h00080;
+        axi.ar.len  = 8'd7;
+        for _i in 0..40 {
+            if axi.arready {
+                break;
+            }
+            clk.next(1);
+        }
+        $assert    (axi.arready, "AR must be accepted");
+        clk.next   (1);
+        axi.arvalid = '0;
+
+        beats = 0;
+        for b in 0..8 {
+            for _i in 0..100 {
+                if axi.rvalid {
+                    break;
+                }
+                clk.next(1);
+            }
+            $assert(axi.rvalid, "R beat must arrive");
+            $assert(axi.r.data == (32'h5d00_0000 + b) as 32, "read data must match written data");
+            if b == 7 {
+                $assert(axi.r.last, "RLAST on final beat");
+            } else {
+                $assert(!axi.r.last);
+            }
+            beats    += 1;
+            clk.next(1);
+        }
+        $assert(beats == 8);
+
+        // ---- Byte strobes: overwrite only byte 1 of word 0x20 ----
+        axi.awvalid = '1;
+        axi.aw.addr = 18'h00080;
+        axi.aw.len  = 8'd0;
+        for _i in 0..40 {
+            if axi.awready {
+                break;
+            }
+            clk.next(1);
+        }
+        $assert    (axi.awready, "AW (strobe write) must be accepted");
+        clk.next   (1);
+        axi.awvalid = '0;
+        axi.wvalid  = '1;
+        axi.w.data  = 32'h00ee_0000 | 32'h0000_aa00;
+        axi.w.strb  = 4'b0010; // byte 1 only
+        axi.w.last  = '1;
+        for _i in 0..40 {
+            if axi.wready {
+                break;
+            }
+            clk.next(1);
+        }
+        $assert   (axi.wready);
+        clk.next  (1);
+        axi.wvalid = '0;
+        for _i in 0..100 {
+            if axi.bvalid {
+                break;
+            }
+            clk.next(1);
+        }
+        $assert (axi.bvalid, "B (strobe write) must arrive");
+        clk.next(2);
+
+        // Read back word 0x20: byte 1 replaced, others unchanged
+        axi.arvalid = '1;
+        axi.ar.addr = 18'h00080;
+        axi.ar.len  = 8'd0;
+        for _i in 0..40 {
+            if axi.arready {
+                break;
+            }
+            clk.next(1);
+        }
+        clk.next   (1);
+        axi.arvalid = '0;
+        for _i in 0..100 {
+            if axi.rvalid {
+                break;
+            }
+            clk.next(1);
+        }
+        $assert (axi.rvalid, "strobe readback must arrive");
+        $assert (axi.r.data == 32'h5d00_aa00, "only byte 1 must be overwritten");
+        $assert (axi.r.last);
+        clk.next(2);
+
+        // ---- Full-length burst (80 beats, the design's maxBurstLength) ----
+        axi.awvalid = '1;
+        axi.aw.addr = 18'h00400;
+        axi.aw.len  = 8'd79;
+        for _i in 0..40 {
+            if axi.awready {
+                break;
+            }
+            clk.next(1);
+        }
+        clk.next   (1);
+        axi.awvalid = '0;
+        axi.wvalid  = '1;
+        axi.w.strb  = 4'hf;
+        for b in 0..80 {
+            axi.w.data = (32'h7000_0000 + b) as 32;
+            axi.w.last = b == 79;
+            for _i in 0..40 {
+                if axi.wready {
+                    break;
+                }
+                clk.next(1);
+            }
+            $assert (axi.wready, "long burst W beat must be accepted");
+            clk.next(1);
+        }
+        axi.wvalid = '0;
+        for _i in 0..200 {
+            if axi.bvalid {
+                break;
+            }
+            clk.next(1);
+        }
+        $assert (axi.bvalid, "long burst B must arrive");
+        clk.next(2);
+
+        axi.arvalid = '1;
+        axi.ar.addr = 18'h00400;
+        axi.ar.len  = 8'd79;
+        for _i in 0..40 {
+            if axi.arready {
+                break;
+            }
+            clk.next(1);
+        }
+        clk.next   (1);
+        axi.arvalid = '0;
+        for b in 0..80 {
+            for _i in 0..100 {
+                if axi.rvalid {
+                    break;
+                }
+                clk.next(1);
+            }
+            $assert (axi.rvalid, "long burst R beat must arrive");
+            $assert (axi.r.data == (32'h7000_0000 + b) as 32, "long burst data must match");
+            clk.next(1);
+        }
+
+        $finish();
+    }
+}

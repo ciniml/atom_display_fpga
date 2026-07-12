@@ -1,0 +1,111 @@
+// Unit test for async_fifo (util/async_fifo.veryl)
+// Two independent clock generators emulate the main->video clock
+// crossing; stepping ratios exercise the gray-code pointer sync.
+// SPDX-License-Identifier: BSL-1.0
+
+#[test(test_async_fifo)]
+module test_async_fifo {
+    inst wclk: $tb::clock_gen;
+    inst wrst: $tb::reset_gen (
+        clk: wclk,
+    );
+    inst rclk: $tb::clock_gen;
+    inst rrst: $tb::reset_gen (
+        clk: rclk,
+    );
+
+    inst s_in : stream_if::<stream_test_pkg::byte_t>;
+    inst s_out: stream_if::<stream_test_pkg::byte_t>;
+
+    var half_full: logic;
+
+    inst dut: async_fifo::<stream_test_pkg::byte_t> #(
+        DepthBits: 3, // depth 8, half = 4
+    ) (
+        i_wclk     : wclk     ,
+        i_wrst     : wrst     ,
+        i_data     : s_in     ,
+        o_half_full: half_full,
+        i_rclk     : rclk     ,
+        i_rrst     : rrst     ,
+        o_data     : s_out    ,
+    );
+
+    var popped: logic<8>;
+
+    initial {
+        s_in.valid   = 1'b0;
+        s_in.payload = 8'h00;
+        s_out.ready  = 1'b0;
+        wrst.assert (wclk);
+        rrst.assert (rclk);
+        wclk.next   (2);
+        rclk.next   (2);
+
+        $assert(s_out.valid == 1'b0, "empty after reset");
+        $assert(s_in.ready == 1'b1, "writable after reset");
+        $assert(half_full == 1'b0);
+
+        // Push 8 items (full depth) on the write clock only.
+        s_in.valid = 1'b1;
+        for i in 0..8 {
+            $assert     (s_in.ready == 1'b1, "must accept until full");
+            s_in.payload = (8'hc0 + i) as 8;
+            wclk.next   (1);
+        }
+        s_in.valid = 1'b0;
+        // Read pointer sync is stale (read clock hasn't run): FIFO looks full.
+        $assert(s_in.ready == 1'b0, "must be full");
+        $assert(half_full == 1'b1, "half_full at full");
+
+        // No read clock yet: output must still be invalid.
+        $assert(s_out.valid == 1'b0, "no data before read clock runs");
+
+        // Run the read clock to sync the write pointer and fill the
+        // output pipeline (2FF sync + 2-stage pipeline).
+        rclk.next(4);
+        $assert  (s_out.valid == 1'b1, "data appears after sync latency");
+        $assert  (s_out.payload == 8'hc0, "FIFO order");
+
+        // Drain all 8 items on the read clock, checking order.
+        s_out.ready = 1'b1;
+        for i in 0..8 {
+            // Wait until an item is available (pipeline refill latency).
+            for _j in 0..8 {
+                if s_out.valid {
+                    break;
+                }
+                rclk.next(1);
+            }
+            $assert  (s_out.valid == 1'b1, "item must arrive");
+            popped    = s_out.payload;
+            $assert  (popped == (8'hc0 + i) as 8, "FIFO order across CDC");
+            rclk.next(1);
+        }
+        s_out.ready = 1'b0;
+        rclk.next  (2);
+        $assert    (s_out.valid == 1'b0, "empty after drain");
+
+        // Write side sees the space again after its own sync latency.
+        wclk.next(4);
+        $assert  (s_in.ready == 1'b1, "writable after drain");
+        $assert  (half_full == 1'b0, "not half full after drain");
+
+        // Interleaved operation: alternate write/read clocks (2:1 ratio).
+        s_in.valid  = 1'b1;
+        s_out.ready = 1'b1;
+        for i in 0..16 {
+            s_in.payload = (8'h20 + i) as 8;
+            wclk.next   (1);
+            rclk.next   (2);
+        }
+        s_in.valid = 1'b0;
+        // Drain whatever is left in flight.
+        for _j in 0..16 {
+            rclk.next(1);
+        }
+        $assert(s_out.valid == 1'b0, "empty at end");
+
+        $finish();
+    }
+}

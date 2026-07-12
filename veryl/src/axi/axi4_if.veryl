@@ -1,0 +1,155 @@
+// axi4_if.veryl
+// AXI4 (burst-capable subset) interface definition.
+// Veryl port of fpga_samples axi4.scala (AXI4Params / AXI4IO / AXI4Resp).
+// Channel payloads are packed structs (Chisel: AXI4A/AXI4R/AXI4W/AXI4B)
+// so channel-level components (reg slice, gate) can reuse the generic
+// stream modules. Unlike the Chisel version which drops unused channels
+// via Option, this interface always carries all five channels;
+// read-only/write-only masters use the read_master/write_master modports
+// and tie off the rest.
+// SPDX-License-Identifier: BSL-1.0
+
+pub package axi4_pkg {
+    enum Axi4Resp: logic<2> {
+        okay = 2'd0,
+        exokay = 2'd1,
+        slverr = 2'd2,
+        decerr = 2'd3,
+    }
+
+    /// AR/AW channel payload (Chisel: AXI4A)
+    struct Axi4A::<AddressBits: u32> {
+        addr: logic<AddressBits>,
+        len : logic<8>          ,
+    }
+
+    /// R channel payload (Chisel: AXI4R)
+    struct Axi4R::<DataBits: u32> {
+        data: logic   <DataBits>,
+        resp: Axi4Resp          ,
+        last: logic             ,
+    }
+
+    /// W channel payload (Chisel: AXI4W)
+    struct Axi4W::<DataBits: u32> {
+        data: logic<DataBits>    ,
+        strb: logic<DataBits / 8>,
+        last: logic              ,
+    }
+
+    /// B channel payload (Chisel: AXI4B)
+    struct Axi4B {
+        resp: Axi4Resp,
+    }
+}
+
+pub interface axi4_if::<AddressBits: u32, DataBits: u32> {
+    var arvalid: logic                         ;
+    var arready: logic                         ;
+    var ar     : axi4_pkg::Axi4A::<AddressBits>;
+
+    var rvalid: logic                      ;
+    var rready: logic                      ;
+    var r     : axi4_pkg::Axi4R::<DataBits>;
+
+    var awvalid: logic                         ;
+    var awready: logic                         ;
+    var aw     : axi4_pkg::Axi4A::<AddressBits>;
+
+    var wvalid: logic                      ;
+    var wready: logic                      ;
+    var w     : axi4_pkg::Axi4W::<DataBits>;
+
+    var bvalid: logic          ;
+    var bready: logic          ;
+    var b     : axi4_pkg::Axi4B;
+
+    modport master {
+        arvalid: output,
+        arready: input ,
+        ar     : output,
+        rvalid : input ,
+        rready : output,
+        r      : input ,
+        awvalid: output,
+        awready: input ,
+        aw     : output,
+        wvalid : output,
+        wready : input ,
+        w      : output,
+        bvalid : input ,
+        bready : output,
+        b      : input ,
+    }
+
+    modport slave {
+        arvalid: input ,
+        arready: output,
+        ar     : input ,
+        rvalid : output,
+        rready : input ,
+        r      : output,
+        awvalid: input ,
+        awready: output,
+        aw     : input ,
+        wvalid : input ,
+        wready : output,
+        w      : input ,
+        bvalid : output,
+        bready : input ,
+        b      : output,
+    }
+
+    // Read-only master (Chisel: AXI4ReadOnly mode)
+    modport read_master {
+        arvalid: output,
+        arready: input ,
+        ar     : output,
+        rvalid : input ,
+        rready : output,
+        r      : input ,
+    }
+
+    // Write-only master (Chisel: AXI4WriteOnly mode)
+    modport write_master {
+        awvalid: output,
+        awready: input ,
+        aw     : output,
+        wvalid : output,
+        wready : input ,
+        w      : output,
+        bvalid : input ,
+        bready : output,
+        b      : input ,
+    }
+}
+
+/// Ties off the write channels of an axi4_if whose master only reads
+/// (Chisel: AXI4ReadOnly masters simply lack these channels).
+pub module axi4_write_tieoff::<AddressBits: u32, DataBits: u32> (
+    axi: modport axi4_if::<AddressBits, DataBits>::write_master,
+) {
+    always_comb {
+        axi.awvalid = '0;
+        axi.aw.addr = '0;
+        axi.aw.len  = '0;
+        axi.wvalid  = '0;
+        axi.w.data  = '0;
+        axi.w.strb  = '0;
+        axi.w.last  = '0;
+        axi.bready  = '0;
+    }
+}
+
+/// Ties off the read channels of an axi4_if whose master only writes
+/// (Chisel: AXI4WriteOnly masters simply lack these channels).
+pub module axi4_read_tieoff::<AddressBits: u32, DataBits: u32> (
+    axi: modport axi4_if::<AddressBits, DataBits>::read_master,
+) {
+    always_comb {
+        axi.arvalid = '0;
+        axi.ar.addr = '0;
+        axi.ar.len  = '0;
+        axi.rready  = '0;
+    }
+}

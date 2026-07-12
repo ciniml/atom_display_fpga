@@ -1,0 +1,437 @@
+// m5stack_hdmi.veryl
+// ATOM Display top-level: SPI byte streams -> command processor ->
+// stream writer/reader -> AXI arbitration -> SDRC bridge (frame buffer
+// in SDRAM), and frame buffer reader -> async FIFO -> video signal
+// generator in the video clock domain.
+// Veryl port of atom_display m5stackhdmi.scala (M5StackHDMI).
+//
+// m5stack_hdmi_core takes the SPI RX/TX byte streams so the native
+// simulator can drive them directly; the m5stack_hdmi wrapper adds the
+// spi_slave (SCK/CS clock domains) for synthesis.
+//
+// Real design instantiation (matching the Chisel elaboration):
+//   m5stack_hdmi_core::<24, 22, 2048, 2048, 4096, 80, 128, 106>
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+pub module m5stack_hdmi_core::<
+    AddressBits    : u32, // AXI byte address bits (frame buffer x2 banks)
+    SdrcAddressBits: u32, // = AddressBits - 2
+    MaxWidth       : u32, // frame buffer line stride in pixels
+    MaxHeight      : u32, // visible max height (frame buffer reader)
+    ProcMaxHeight  : u32, // = MaxHeight * 2 (off-screen bank, processor view)
+    MaxBurstLength : u32, // SDRC burst length in words
+    BurstPixels    : u32, // stream writer/reader burst (Chisel default: 128)
+    FbrBurstPixels : u32, // frame buffer reader burst (Chisel: maxBurst*4/3 = 106)
+> #(
+    param FifoDepthBits: u32 = 12, // async FIFO depth (4096 pixels)
+    // Chisel: defaultVideoParams (720p)
+    param DefaultBackPorchV : u32 = 20  ,
+    param DefaultPixelsV    : u32 = 720 ,
+    param DefaultFrontPorchV: u32 = 5   ,
+    param DefaultPulseWidthV: u32 = 5   ,
+    param DefaultBackPorchH : u32 = 220 ,
+    param DefaultPixelsH    : u32 = 1280,
+    param DefaultFrontPorchH: u32 = 110 ,
+    param DefaultPulseWidthH: u32 = 40  ,
+) (
+    // Main clock domain
+    i_clk: input 'main clock,
+    i_rst: input 'main reset,
+    // Video clock domain
+    i_video_clk: input 'video clock,
+    i_video_rst: input 'video reset,
+    // SPI byte streams (main domain; from/to spi_slave)
+    i_spi_receive: modport 'main stream_if::<spi_pkg::SpiData>::slave ,
+    o_spi_send   : modport 'main stream_if::<spi_pkg::SpiByte>::master,
+    // Video output (video domain)
+    o_video       : output 'video video_pkg::VideoIO,
+    o_data_in_sync: output 'video logic             ,
+    // Status / control (main domain)
+    o_trigger          : output 'main logic,
+    o_processor_is_busy: output 'main logic,
+    // SDRAM controller
+    sdrc: modport 'main sdrc_if::<SdrcAddressBits, 4, MaxBurstLength>::host,
+    // Video clock PLL reconfiguration (to top.sv)
+    o_video_clock_config_valid: output 'main logic                        ,
+    o_video_clock_config      : output 'main command_pkg::VideoClockConfig,
+    o_dbg_copy_rect           : output 'main logic                        ,
+) {
+    // ---- SPI receive queue -> command processor ----
+    inst spi_rx_q_out : stream_if::<spi_pkg::SpiData>;
+    inst spi_rx_sliced: stream_if::<spi_pkg::SpiData>;
+    inst proc_result  : stream_if::<spi_pkg::SpiByte>;
+
+    inst u_spi_rx_queue: sync_fifo::<spi_pkg::SpiData> #(
+        DepthBits: 11, // Chisel: Queue(spiSlave.io.receive, 2048)
+    ) (
+        i_clk  : i_clk        ,
+        i_rst  : i_rst        ,
+        i_data : i_spi_receive,
+        o_data : spi_rx_q_out ,
+        o_count: _            ,
+    );
+
+    inst u_spi_rx_slice: irrevocable_reg_slice::<spi_pkg::SpiData> (
+        i_clk : i_clk        ,
+        i_rst : i_rst        ,
+        i_data: spi_rx_q_out ,
+        o_data: spi_rx_sliced,
+    );
+
+    inst u_result_slice: irrevocable_reg_slice::<spi_pkg::SpiByte> (
+        i_clk : i_clk      ,
+        i_rst : i_rst      ,
+        i_data: proc_result,
+        o_data: o_spi_send ,
+    );
+
+    // ---- Command processor and stream writer/reader ----
+    var rd_cmd_valid: 'main logic                                                                 ;
+    var rd_cmd_ready: 'main logic                                                                 ;
+    var rd_cmd      : 'main video_pkg::StreamReaderCommand::<AddressBits, MaxWidth, ProcMaxHeight>;
+    var rd_busy     : 'main logic                                                                 ;
+    var wr_cmd_valid: 'main logic                                                                 ;
+    var wr_cmd_ready: 'main logic                                                                 ;
+    var wr_cmd      : 'main video_pkg::StreamWriterCommand::<AddressBits, MaxWidth, ProcMaxHeight>;
+    var wr_busy     : 'main logic                                                                 ;
+
+    inst reader_data: stream_if::<video_pkg::VideoSignal>;
+    inst writer_data: stream_if::<video_pkg::VideoSignal>;
+
+    var proc_fb_config: 'main video_pkg::FrameBufferReaderConfig;
+    var vcfg_valid    : 'main logic                             ;
+    var vcfg          : 'main video_pkg::VideoConfig            ;
+    var vclk_cfg_valid: 'main logic                             ;
+    var vclk_cfg      : 'main command_pkg::VideoClockConfig     ;
+
+    inst u_processor: command_processor::<AddressBits, MaxWidth, ProcMaxHeight> #(
+        EnableCopyRect: 1             ,
+        DefaultPixelsH: DefaultPixelsH,
+        DefaultPixelsV: DefaultPixelsV,
+    ) (
+        i_clk                     : i_clk              ,
+        i_rst                     : i_rst              ,
+        i_data                    : spi_rx_sliced      ,
+        o_result                  : proc_result        ,
+        o_is_busy                 : o_processor_is_busy,
+        o_reader_command_valid    : rd_cmd_valid       ,
+        i_reader_command_ready    : rd_cmd_ready       ,
+        o_reader_command          : rd_cmd             ,
+        i_reader_data             : reader_data        ,
+        i_reader_is_busy          : rd_busy            ,
+        o_writer_command_valid    : wr_cmd_valid       ,
+        i_writer_command_ready    : wr_cmd_ready       ,
+        o_writer_command          : wr_cmd             ,
+        o_writer_data             : writer_data        ,
+        i_writer_is_busy          : wr_busy            ,
+        o_frame_buffer_config     : proc_fb_config     ,
+        o_video_config_valid      : vcfg_valid         ,
+        o_video_config            : vcfg               ,
+        o_video_clock_config_valid: vclk_cfg_valid     ,
+        o_video_clock_config      : vclk_cfg           ,
+        o_dbg_copy_rect           : o_dbg_copy_rect    ,
+    );
+
+    // ---- AXI masters: 0 = frame buffer reader (RO), 1 = writer (WO),
+    //      2 = stream reader (RO); lower index = higher priority ----
+    inst demux_in : axi4_if::<AddressBits, 32> [3];
+    inst wr_axi   : axi4_if::<AddressBits, 32>;
+    inst rd_axi   : axi4_if::<AddressBits, 32>;
+    inst demux_out: axi4_if::<AddressBits, 32>;
+    inst mem_axi  : axi4_if::<AddressBits, 32>;
+
+    inst u_writer: stream_writer::<AddressBits, MaxWidth, ProcMaxHeight, BurstPixels, MaxBurstLength> (
+        i_clk          : i_clk       ,
+        i_rst          : i_rst       ,
+        i_command_valid: wr_cmd_valid,
+        o_command_ready: wr_cmd_ready,
+        i_command      : wr_cmd      ,
+        i_data         : writer_data ,
+        axi            : wr_axi      ,
+        o_busy         : wr_busy     ,
+    );
+    inst u_wr_read_tieoff: axi4_read_tieoff::<AddressBits, 32> (
+        axi: wr_axi,
+    );
+
+    inst u_reader: stream_reader::<AddressBits, MaxWidth, ProcMaxHeight, BurstPixels, MaxBurstLength> (
+        i_clk          : i_clk       ,
+        i_rst          : i_rst       ,
+        i_command_valid: rd_cmd_valid,
+        o_command_ready: rd_cmd_ready,
+        i_command      : rd_cmd      ,
+        o_data         : reader_data ,
+        axi            : rd_axi      ,
+        o_busy         : rd_busy     ,
+    );
+    inst u_rd_write_tieoff: axi4_write_tieoff::<AddressBits, 32> (
+        axi: rd_axi,
+    );
+
+    // Gate frame buffer access from the command processor's writer and
+    // reader so video refresh reads are never starved
+    // (Chisel: enableFrameBufferAccess).
+    var fbr_active      : 'main logic;
+    var fifo_half_full  : 'main logic;
+    var half_full_r     : 'main logic;
+    let enable_fb_access: 'main logic = !fbr_active || half_full_r;
+
+    inst u_wr_gate: axi4_gate::<AddressBits, 32> (
+        i_clk   : i_clk           ,
+        i_rst   : i_rst           ,
+        i_enable: enable_fb_access,
+        i_axi   : wr_axi          ,
+        o_axi   : demux_in[1]     ,
+    );
+
+    inst u_rd_gate: axi4_gate::<AddressBits, 32> (
+        i_clk   : i_clk           ,
+        i_rst   : i_rst           ,
+        i_enable: enable_fb_access,
+        i_axi   : rd_axi          ,
+        o_axi   : demux_in[2]     ,
+    );
+
+    // ---- Frame buffer reader (video refresh) ----
+    var fb_trigger: 'main logic                             ;
+    var fbr_config: 'main video_pkg::FrameBufferReaderConfig;
+
+    always_comb {
+        fbr_config         = proc_fb_config;
+        fbr_config.scale_x = 1; // fixed; scaling is done in the video signal generator
+        fbr_config.scale_y = 1;
+    }
+
+    inst fbr_data: stream_if::<video_pkg::VideoSignal>;
+
+    inst u_fbr: frame_buffer_reader::<AddressBits, MaxWidth, MaxHeight, FbrBurstPixels, MaxBurstLength> (
+        i_clk    : i_clk      ,
+        i_rst    : i_rst      ,
+        i_trigger: fb_trigger ,
+        o_active : fbr_active ,
+        i_config : fbr_config ,
+        o_data   : fbr_data   ,
+        axi      : demux_in[0],
+    );
+    inst u_fbr_write_tieoff: axi4_write_tieoff::<AddressBits, 32> (
+        axi: demux_in[0],
+    );
+
+    // ---- AXI arbitration -> SDRC bridge ----
+    inst u_demux: axi4_priority_demux::<AddressBits, 32> #(
+        NumMasters: 3,
+    ) (
+        i_clk: i_clk    ,
+        i_rst: i_rst    ,
+        i_axi: demux_in ,
+        o_axi: demux_out,
+    );
+
+    inst u_axi_slice: axi4_reg_slice::<AddressBits, 32> (
+        i_clk: i_clk    ,
+        i_rst: i_rst    ,
+        i_axi: demux_out,
+        o_axi: mem_axi  ,
+    );
+
+    inst u_sdrc_bridge: sdrc_bridge::<AddressBits, SdrcAddressBits, 4, 32, MaxBurstLength> (
+        i_clk: i_clk  ,
+        i_rst: i_rst  ,
+        axi  : mem_axi,
+        sdrc : sdrc   ,
+    );
+
+    // ---- Pixel path: FBR -> reg slice -> async FIFO -> video domain ----
+    inst fifo_in :        stream_if::<video_pkg::VideoSignal>;
+    inst fifo_out:        stream_if::<video_pkg::VideoSignal>;
+    inst vsg_data: 'video stream_if::<video_pkg::VideoSignal>;
+
+    inst u_fbr_slice: irrevocable_reg_slice::<video_pkg::VideoSignal> (
+        i_clk : i_clk   ,
+        i_rst : i_rst   ,
+        i_data: fbr_data,
+        o_data: fifo_in ,
+    );
+
+    inst u_fifo: async_fifo::<video_pkg::VideoSignal> #(
+        DepthBits: FifoDepthBits,
+    ) (
+        i_wclk     : i_clk         ,
+        i_wrst     : i_rst         ,
+        i_data     : fifo_in       ,
+        o_half_full: fifo_half_full,
+        i_rclk     : i_video_clk   ,
+        i_rrst     : i_video_rst   ,
+        o_data     : fifo_out      ,
+    );
+
+    inst u_vsg_slice: irrevocable_reg_slice::<video_pkg::VideoSignal> (
+        i_clk : i_video_clk,
+        i_rst : i_video_rst,
+        i_data: fifo_out   ,
+        o_data: vsg_data   ,
+    );
+
+    // ---- Main domain registers ----
+    var video_config_valid   : 'main logic                                       ;
+    var vcfg_valid_1         : 'main logic                                       ;
+    var vcfg_valid_2         : 'main logic                                       ;
+    var vcfg_latched         : 'main video_pkg::VideoConfig                      ;
+    var video_clock_config   : 'main command_pkg::VideoClockConfig               ;
+    var video_clock_cfg_valid: 'main logic                                       ;
+    var mult_config          : 'main video_pkg::VideoMultiplicationConfig::<8, 8>;
+    var trigger_sync         : 'main logic                                       ;
+    var trigger_r            : 'main logic                                       ;
+
+
+    // ---- Video signal generator (video domain) ----
+    var vsg_cfg_valid_v: 'video logic                                       <2>;
+    var vcfg_video     : 'video video_pkg::VideoConfig                         ;
+    var vsg_mult_0     : 'video video_pkg::VideoMultiplicationConfig::<8, 8>   ;
+    var vsg_mult_1     : 'video video_pkg::VideoMultiplicationConfig::<8, 8>   ;
+    var vsg_trigger    : 'video logic                                          ;
+    var vsg_v_active   : 'video logic                                          ;
+
+    inst u_vsg: video_signal_generator::<8, 8> #(
+        DefaultBackPorchV : DefaultBackPorchV ,
+        DefaultPixelsV    : DefaultPixelsV    ,
+        DefaultFrontPorchV: DefaultFrontPorchV,
+        DefaultPulseWidthV: DefaultPulseWidthV,
+        DefaultBackPorchH : DefaultBackPorchH ,
+        DefaultPixelsH    : DefaultPixelsH    ,
+        DefaultFrontPorchH: DefaultFrontPorchH,
+        DefaultPulseWidthH: DefaultPulseWidthH,
+    ) (
+        i_clk              : i_video_clk       ,
+        i_rst              : i_video_rst       ,
+        i_data             : vsg_data          ,
+        o_video            : o_video           ,
+        o_trigger_frame    : vsg_trigger       ,
+        o_data_in_sync     : o_data_in_sync    ,
+        i_config_valid     : vsg_cfg_valid_v[0],
+        i_config           : vcfg_video        ,
+        i_mult_config_valid: '1                ,
+        i_mult_config      : vsg_mult_0        ,
+        o_v_active         : vsg_v_active      ,
+    );
+
+    assign o_trigger                  = trigger_r;
+    assign o_video_clock_config       = video_clock_config;
+    assign o_video_clock_config_valid = video_clock_cfg_valid;
+
+    // ---- Video domain: frame trigger, extended to 2 cycles ----
+    var trigger_frame_r   : 'video logic;
+    var trigger_from_video: 'video logic;
+
+    unsafe (cdc) {
+        always_ff (i_video_clk, i_video_rst) {
+            if_reset {
+                trigger_frame_r         = '0;
+                trigger_from_video      = '0;
+                vsg_cfg_valid_v         = '0;
+                vcfg_video              = video_pkg::preset_default();
+                vsg_mult_0.multiplier_h = 1;
+                vsg_mult_0.multiplier_v = 1;
+                vsg_mult_1.multiplier_h = 1;
+                vsg_mult_1.multiplier_v = 1;
+            } else {
+                trigger_frame_r    = vsg_trigger;
+                trigger_from_video = vsg_trigger | trigger_frame_r;
+                vcfg_video         = vcfg_latched;
+                // 2FF sync of the config valid / multiplier config
+                vsg_cfg_valid_v = {video_config_valid, vsg_cfg_valid_v[1]};
+                vsg_mult_1      = mult_config;
+                vsg_mult_0      = vsg_mult_1;
+            }
+        }
+
+        always_ff (i_clk, i_rst) {
+            if_reset {
+                trigger_sync             = '0;
+                trigger_r                = '0;
+                half_full_r              = '0;
+                vcfg_latched             = video_pkg::preset_default();
+                video_config_valid       = '0;
+                vcfg_valid_1             = '0;
+                vcfg_valid_2             = '0;
+                video_clock_config       = command_pkg::video_clock_config_74m25();
+                video_clock_cfg_valid    = '0;
+                mult_config.multiplier_h = 1;
+                mult_config.multiplier_v = 1;
+            } else {
+                // Frame trigger: video -> main 2FF sync
+                trigger_sync = trigger_from_video;
+                trigger_r    = trigger_sync;
+
+                half_full_r = fifo_half_full;
+
+                // Video config: latch and extend valid for 3 cycles
+                if !video_config_valid && vcfg_valid {
+                    vcfg_latched = vcfg;
+                }
+                vcfg_valid_1       = vcfg_valid;
+                vcfg_valid_2       = vcfg_valid_1;
+                video_config_valid = vcfg_valid_2 | vcfg_valid_1 | vcfg_valid;
+
+                // Video clock config
+                if !video_clock_cfg_valid && vclk_cfg_valid {
+                    video_clock_config = vclk_cfg;
+                }
+                video_clock_cfg_valid = vclk_cfg_valid;
+
+                // Video multiplier from the screen scale configuration
+                mult_config.multiplier_h = if proc_fb_config.scale_x == '0 ? 4'd1 : proc_fb_config.scale_x as 4;
+                mult_config.multiplier_v = if proc_fb_config.scale_y == '0 ? 4'd1 : proc_fb_config.scale_y as 4;
+            }
+        }
+    }
+
+    assign fb_trigger = trigger_r;
+}
+
+/// Synthesis top including the SPI slave (Chisel: M5StackHDMI with SPIIO).
+pub module m5stack_hdmi (
+    i_clk                     : input   'main  clock                        ,
+    i_rst                     : input   'main  reset                        ,
+    i_video_clk               : input   'video clock                        ,
+    i_video_rst               : input   'video reset                        ,
+    spi                       : modport 'sckp  spi_if::device               ,
+    o_video                   : output  'video video_pkg::VideoIO           ,
+    o_data_in_sync            : output  'video logic                        ,
+    o_trigger                 : output  'main  logic                        ,
+    o_processor_is_busy       : output  'main  logic                        ,
+    sdrc                      : modport 'main  sdrc_if::<22, 4, 80>::host   ,
+    o_video_clock_config_valid: output  'main  logic                        ,
+    o_video_clock_config      : output  'main  command_pkg::VideoClockConfig,
+    o_dbg_copy_rect           : output  'main  logic                        ,
+) {
+    inst spi_receive: stream_if::<spi_pkg::SpiData>;
+    inst spi_send   : stream_if::<spi_pkg::SpiByte>;
+
+    inst u_spi_slave: spi_slave (
+        i_clk    : i_clk      ,
+        i_rst    : i_rst      ,
+        spi      : spi        ,
+        o_receive: spi_receive,
+        i_send   : spi_send   ,
+    );
+
+    unsafe (cdc) {
+        inst u_core: m5stack_hdmi_core::<24, 22, 2048, 2048, 4096, 80, 128, 106> (
+            i_clk                     : i_clk                     ,
+            i_rst                     : i_rst                     ,
+            i_video_clk               : i_video_clk               ,
+            i_video_rst               : i_video_rst               ,
+            i_spi_receive             : spi_receive               ,
+            o_spi_send                : spi_send                  ,
+            o_video                   : o_video                   ,
+            o_data_in_sync            : o_data_in_sync            ,
+            o_trigger                 : o_trigger                 ,
+            o_processor_is_busy       : o_processor_is_busy       ,
+            sdrc                      : sdrc                      ,
+            o_video_clock_config_valid: o_video_clock_config_valid,
+            o_video_clock_config      : o_video_clock_config      ,
+            o_dbg_copy_rect           : o_dbg_copy_rect           ,
+        );
+    }
+}

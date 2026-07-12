@@ -1,0 +1,463 @@
+// Unit test for command_processor with stubbed stream reader/writer.
+// Geometry: 64x32 (processor view). The test feeds SPI command bytes
+// (paced like a real SPI master) and checks the issued writer/reader
+// commands, the WRITE_RAW pixel path (RGB565 byte packing), READ_ID
+// results, and SET_SCREEN_SCALE checksum handling.
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+#[test(test_command_processor)]
+#[allow(unassign_variable)]
+module test_command_processor {
+    inst clk: $tb::clock_gen;
+    inst rst: $tb::reset_gen (
+        clk: clk,
+    );
+
+    inst spi_rx     : stream_if::<spi_pkg::SpiData>;
+    inst result     : stream_if::<spi_pkg::SpiByte>;
+    inst reader_data: stream_if::<video_pkg::VideoSignal>;
+    inst writer_data: stream_if::<video_pkg::VideoSignal>;
+
+    var is_busy: logic;
+
+    var rd_cmd_valid: logic                                       ;
+    var rd_cmd_ready: logic                                       ;
+    var rd_cmd      : video_pkg::StreamReaderCommand::<16, 64, 32>;
+    var rd_busy     : logic                                       ;
+    var wr_cmd_valid: logic                                       ;
+    var wr_cmd_ready: logic                                       ;
+    var wr_cmd      : video_pkg::StreamWriterCommand::<16, 64, 32>;
+    var wr_busy     : logic                                       ;
+
+    var fb_config     : video_pkg::FrameBufferReaderConfig;
+    var vcfg_valid    : logic                             ;
+    var vcfg          : video_pkg::VideoConfig            ;
+    var vclk_cfg_valid: logic                             ;
+    var vclk_cfg      : command_pkg::VideoClockConfig     ;
+    var dbg_copy_rect : logic                             ;
+
+    inst dut: command_processor::<16, 64, 32> (
+        i_clk                     : clk           ,
+        i_rst                     : rst           ,
+        i_data                    : spi_rx        ,
+        o_result                  : result        ,
+        o_is_busy                 : is_busy       ,
+        o_reader_command_valid    : rd_cmd_valid  ,
+        i_reader_command_ready    : rd_cmd_ready  ,
+        o_reader_command          : rd_cmd        ,
+        i_reader_data             : reader_data   ,
+        i_reader_is_busy          : rd_busy       ,
+        o_writer_command_valid    : wr_cmd_valid  ,
+        i_writer_command_ready    : wr_cmd_ready  ,
+        o_writer_command          : wr_cmd        ,
+        o_writer_data             : writer_data   ,
+        i_writer_is_busy          : wr_busy       ,
+        o_frame_buffer_config     : fb_config     ,
+        o_video_config_valid      : vcfg_valid    ,
+        o_video_config            : vcfg          ,
+        o_video_clock_config_valid: vclk_cfg_valid,
+        o_video_clock_config      : vclk_cfg      ,
+        o_dbg_copy_rect           : dbg_copy_rect ,
+    );
+
+    var byte_to_send: logic<8> ;
+    var first_flag  : logic    ;
+    var pixel_count : u32      ;
+    var expected_px : logic<16>;
+    var id_bytes    : logic<32>;
+    var got_id      : logic    ;
+
+    initial {
+        spi_rx.valid                       = '0;
+        spi_rx.payload.first               = '0;
+        spi_rx.payload.data                = '0;
+        result.ready                       = '1;
+        reader_data.valid                  = '0;
+        reader_data.payload.pixel_data     = '0;
+        reader_data.payload.start_of_frame = '0;
+        reader_data.payload.end_of_line    = '0;
+        writer_data.ready                  = '1;
+        rd_busy                            = '0;
+        wr_busy                            = '0;
+        rd_cmd_ready                       = '0;
+        wr_cmd_ready                       = '0;
+        rst.assert                        (clk);
+        clk.next                          (2);
+
+        // ---- Reset sequence: full-screen clear fill ----
+        for _i in 0..20 {
+            if wr_cmd_valid {
+                break;
+            }
+            clk.next(1);
+        }
+        $assert     (wr_cmd_valid, "clear command must be issued after reset");
+        $assert     (wr_cmd.do_fill == '1 && wr_cmd.color == 16'h0000, "clear fills with black");
+        $assert     (wr_cmd.end_x_inclusive == 63 && wr_cmd.end_y_inclusive == 31, "clear covers the whole buffer");
+        wr_cmd_ready = '1;
+        clk.next    (1);
+        wr_cmd_ready = '0;
+        wr_busy      = '1;
+        clk.next    (4);
+        wr_busy      = '0;
+        for _i in 0..20 {
+            if !is_busy {
+                break;
+            }
+            clk.next(1);
+        }
+        $assert (!is_busy, "processor must go idle after clear");
+        clk.next(2);
+
+        // ---- FILL_RECT (RGB565): x 10..20, y 5..8, color 0xabcd ----
+        // Command byte 0x6a = FILL_RECT | 2, then 10 parameter bytes.
+        first_flag = '1;
+        for k in 0..11 {
+            case k {
+                0      : byte_to_send = 8'h6a;
+                1      : byte_to_send = 8'h00;
+                2      : byte_to_send = 8'd10; // x start
+                3      : byte_to_send = 8'h00;
+                4      : byte_to_send = 8'd5; // y start
+                5      : byte_to_send = 8'h00;
+                6      : byte_to_send = 8'd20; // x end
+                7      : byte_to_send = 8'h00;
+                8      : byte_to_send = 8'd8; // y end
+                9      : byte_to_send = 8'hab; // color hi
+                default: byte_to_send = 8'hcd; // color lo
+            }
+            spi_rx.valid         = '1;
+            spi_rx.payload.first = first_flag;
+            spi_rx.payload.data  = byte_to_send;
+            first_flag           = '0;
+            for _i in 0..20 {
+                if spi_rx.ready {
+                    break;
+                }
+                clk.next(1);
+            }
+            $assert     (spi_rx.ready, "SPI byte must be accepted");
+            clk.next    (1);
+            spi_rx.valid = '0;
+            clk.next    (7); // pace like a real SPI master
+        }
+
+        for _i in 0..30 {
+            if wr_cmd_valid {
+                break;
+            }
+            clk.next(1);
+        }
+        $assert     (wr_cmd_valid, "FILL_RECT must issue a writer command");
+        $assert     (wr_cmd.start_x == 10 && wr_cmd.end_x_inclusive == 20, "FILL_RECT x range");
+        $assert     (wr_cmd.start_y == 5 && wr_cmd.end_y_inclusive == 8, "FILL_RECT y range");
+        $assert     (wr_cmd.do_fill == '1 && wr_cmd.color == 16'habcd, "FILL_RECT color");
+        wr_cmd_ready = '1;
+        clk.next    (1);
+        wr_cmd_ready = '0;
+        wr_busy      = '1;
+        clk.next    (4);
+        wr_busy      = '0;
+        for _i in 0..20 {
+            if !is_busy {
+                break;
+            }
+            clk.next(1);
+        }
+        $assert (!is_busy, "processor must go idle after FILL_RECT");
+        clk.next(2);
+
+        // ---- CA_SET x=3..6, RA_SET y=2..4, then WRITE_RAW RGB565 ----
+        first_flag = '1;
+        for k in 0..5 {
+            case k {
+                0      : byte_to_send = 8'h2a; // CA_SET
+                1      : byte_to_send = 8'h00;
+                2      : byte_to_send = 8'd3;
+                3      : byte_to_send = 8'h00;
+                default: byte_to_send = 8'd6;
+            }
+            spi_rx.valid         = '1;
+            spi_rx.payload.first = first_flag;
+            spi_rx.payload.data  = byte_to_send;
+            first_flag           = '0;
+            for _i in 0..20 {
+                if spi_rx.ready {
+                    break;
+                }
+                clk.next(1);
+            }
+            clk.next    (1);
+            spi_rx.valid = '0;
+            clk.next    (7);
+        }
+        first_flag = '1;
+        for k in 0..5 {
+            case k {
+                0      : byte_to_send = 8'h2b; // RA_SET
+                1      : byte_to_send = 8'h00;
+                2      : byte_to_send = 8'd2;
+                3      : byte_to_send = 8'h00;
+                default: byte_to_send = 8'd4;
+            }
+            spi_rx.valid         = '1;
+            spi_rx.payload.first = first_flag;
+            spi_rx.payload.data  = byte_to_send;
+            first_flag           = '0;
+            for _i in 0..20 {
+                if spi_rx.ready {
+                    break;
+                }
+                clk.next(1);
+            }
+            clk.next    (1);
+            spi_rx.valid = '0;
+            clk.next    (7);
+        }
+
+        // WRITE_RAW RGB565 (0x42): 4x3 = 12 pixels = 24 bytes
+        spi_rx.valid         = '1;
+        spi_rx.payload.first = '1;
+        spi_rx.payload.data  = 8'h42;
+        for _i in 0..20 {
+            if spi_rx.ready {
+                break;
+            }
+            clk.next(1);
+        }
+        clk.next    (1);
+        spi_rx.valid = '0;
+        clk.next    (7); // pre/post decode completes; SPI routing switches
+
+        for _i in 0..30 {
+            if wr_cmd_valid {
+                break;
+            }
+            clk.next(1);
+        }
+        $assert     (wr_cmd_valid, "WRITE_RAW must issue a writer command");
+        $assert     (wr_cmd.start_x == 3 && wr_cmd.end_x_inclusive == 6, "WRITE_RAW uses CA_SET range");
+        $assert     (wr_cmd.start_y == 2 && wr_cmd.end_y_inclusive == 4, "WRITE_RAW uses RA_SET range");
+        $assert     (wr_cmd.do_fill == '0, "WRITE_RAW streams pixels");
+        wr_cmd_ready = '1;
+        clk.next    (1);
+        wr_cmd_ready = '0;
+        wr_busy      = '1;
+
+        // Feed 24 bytes (12 pixels, big-endian) and collect writer data
+        pixel_count = 0;
+        for k in 0..24 {
+            spi_rx.valid         = '1;
+            spi_rx.payload.first = '0;
+            spi_rx.payload.data  = if (k % 2) == 0 ? (8'hd0 + (k / 2)) as 8 : (8'h10 + (k / 2)) as 8;
+            for _i in 0..20 {
+                if spi_rx.ready {
+                    break;
+                }
+                clk.next(1);
+            }
+            $assert     (spi_rx.ready, "pixel byte must be accepted");
+            clk.next    (1);
+            spi_rx.valid = '0;
+            for _i in 0..6 {
+                if writer_data.valid && writer_data.ready {
+                    expected_px = ((16'hd010 + ((pixel_count as 16) * 16'h0101))) as 16;
+                    $assert    (
+                        writer_data.payload.pixel_data == expected_px,
+                        "WRITE_RAW pixel must be packed big-endian",
+                    );
+                    pixel_count += 1;
+                }
+                clk.next(1);
+            }
+        }
+        for _i in 0..20 {
+            if writer_data.valid && writer_data.ready {
+                expected_px = ((16'hd010 + ((pixel_count as 16) * 16'h0101))) as 16;
+                $assert    (writer_data.payload.pixel_data == expected_px, "WRITE_RAW pixel must be packed big-endian");
+                pixel_count += 1;
+            }
+            clk.next(1);
+        }
+        $assert(pixel_count == 12, "all 12 pixels must reach the writer");
+        wr_busy = '0;
+        for _i in 0..20 {
+            if !is_busy {
+                break;
+            }
+            clk.next(1);
+        }
+        $assert (!is_busy, "processor must go idle after WRITE_RAW");
+        clk.next(2);
+
+        // ---- READ_ID: expect 'H' 'D' 0x00 0x04 in the result stream ----
+        spi_rx.valid         = '1;
+        spi_rx.payload.first = '1;
+        spi_rx.payload.data  = 8'h04;
+        for _i in 0..20 {
+            if spi_rx.ready {
+                break;
+            }
+            clk.next(1);
+        }
+        clk.next    (1);
+        spi_rx.valid = '0;
+
+        id_bytes    = '0;
+        got_id      = '0;
+        pixel_count = 0; // reused as byte counter
+        for _i in 0..80 {
+            if result.valid && result.ready {
+                if (pixel_count == 0) && (result.payload == 8'h48) {
+                    id_bytes    = {24'h0, result.payload};
+                    pixel_count = 1;
+                } else if (pixel_count >= 1) && (pixel_count <= 3) {
+                    id_bytes    =  {id_bytes[23:0], result.payload};
+                    pixel_count += 1;
+                    if pixel_count == 4 {
+                        got_id = id_bytes == 32'h4844_0004;
+                        break;
+                    }
+                }
+            }
+            clk.next(1);
+        }
+        $assert (got_id, "READ_ID must return 'H' 'D' 0x00 0x04");
+        clk.next(4);
+
+        // ---- SET_SCREEN_SCALE with valid checksum ----
+        // cmd 0x18, sx=2, sy=2, w=32, h=16, checksum = 0xff - sum
+        first_flag = '1;
+        for k in 0..8 {
+            case k {
+                0      : byte_to_send = 8'h18;
+                1      : byte_to_send = 8'd2; // scale x
+                2      : byte_to_send = 8'd2; // scale y
+                3      : byte_to_send = 8'h00;
+                4      : byte_to_send = 8'd32; // logical width
+                5      : byte_to_send = 8'h00;
+                6      : byte_to_send = 8'd16; // logical height
+                default: byte_to_send = 8'hb3; // checksum: 0xff - 0x4c
+            }
+            spi_rx.valid         = '1;
+            spi_rx.payload.first = first_flag;
+            spi_rx.payload.data  = byte_to_send;
+            first_flag           = '0;
+            for _i in 0..20 {
+                if spi_rx.ready {
+                    break;
+                }
+                clk.next(1);
+            }
+            clk.next    (1);
+            spi_rx.valid = '0;
+            clk.next    (7);
+        }
+        for _i in 0..20 {
+            if !is_busy {
+                break;
+            }
+            clk.next(1);
+        }
+        $assert (fb_config.scale_x == 2 && fb_config.scale_y == 2, "screen scale must update");
+        $assert (fb_config.pixels_h == 32 && fb_config.pixels_v == 16, "logical size must update");
+        clk.next(2);
+
+        // ---- COPYRECT: src (1,1)-(4,2) -> dest (8,4) ----
+        first_flag = '1;
+        for k in 0..13 {
+            case k {
+                0      : byte_to_send = 8'h23; // COPYRECT
+                1      : byte_to_send = 8'h00;
+                2      : byte_to_send = 8'd1; // x start
+                3      : byte_to_send = 8'h00;
+                4      : byte_to_send = 8'd1; // y start
+                5      : byte_to_send = 8'h00;
+                6      : byte_to_send = 8'd4; // x end
+                7      : byte_to_send = 8'h00;
+                8      : byte_to_send = 8'd2; // y end
+                9      : byte_to_send = 8'h00;
+                10     : byte_to_send = 8'd8; // x dest
+                11     : byte_to_send = 8'h00;
+                default: byte_to_send = 8'd4; // y dest
+            }
+            spi_rx.valid         = '1;
+            spi_rx.payload.first = first_flag;
+            spi_rx.payload.data  = byte_to_send;
+            first_flag           = '0;
+            for _i in 0..20 {
+                if spi_rx.ready {
+                    break;
+                }
+                clk.next(1);
+            }
+            clk.next    (1);
+            spi_rx.valid = '0;
+            clk.next    (7);
+        }
+        for _i in 0..30 {
+            if wr_cmd_valid && rd_cmd_valid {
+                break;
+            }
+            clk.next(1);
+        }
+        $assert     (rd_cmd_valid, "COPYRECT must issue a reader command");
+        $assert     (wr_cmd_valid, "COPYRECT must issue a writer command");
+        $assert     (
+            rd_cmd.start_x == 1 && rd_cmd.end_x_inclusive == 4 && rd_cmd.start_y == 1 && rd_cmd.end_y_inclusive == 2,
+            "COPYRECT source rect",
+        );
+        $assert     (
+            wr_cmd.start_x == 8 && wr_cmd.end_x_inclusive == 11 && wr_cmd.start_y == 4 && wr_cmd.end_y_inclusive == 5,
+            "COPYRECT destination rect",
+        );
+        $assert     (dbg_copy_rect, "COPYRECT debug flag");
+        rd_cmd_ready = '1;
+        wr_cmd_ready = '1;
+        clk.next    (1);
+        rd_cmd_ready = '0;
+        wr_cmd_ready = '0;
+        rd_busy      = '1;
+        wr_busy      = '1;
+        clk.next    (2);
+
+        // Reader pixels flow through the packet queue to the writer
+        // once a whole line (end_of_line) is queued.
+        reader_data.valid = '1;
+        pixel_count       = 0;
+        for k in 0..4 {
+            reader_data.payload.pixel_data  = (16'h9a00 + k) as 16;
+            reader_data.payload.end_of_line = k == 3;
+            for _i in 0..20 {
+                if reader_data.ready {
+                    break;
+                }
+                clk.next(1);
+            }
+            clk.next(1);
+        }
+        reader_data.valid = '0;
+        for _i in 0..40 {
+            if writer_data.valid && writer_data.ready {
+                $assert    (
+                    writer_data.payload.pixel_data == ((16'h9a00 + (pixel_count as 16)) as 16),
+                    "COPYRECT pixels pass through in order",
+                );
+                pixel_count += 1;
+            }
+            clk.next(1);
+        }
+        $assert(pixel_count == 4, "the queued line must reach the writer");
+        rd_busy = '0;
+        wr_busy = '0;
+        for _i in 0..20 {
+            if !is_busy {
+                break;
+            }
+            clk.next(1);
+        }
+        $assert(!is_busy, "processor must go idle after COPYRECT");
+
+        $finish();
+    }
+}

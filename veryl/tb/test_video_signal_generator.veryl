@@ -1,0 +1,126 @@
+// Unit test for video_signal_generator with a small timing config:
+// H = 2 sync + 2 back + 8 active + 2 front = 14 counts
+// V = 1 sync + 2 back + 4 active + 1 front = 8 lines
+// Verifies stream sync acquisition via start_of_frame, pixel ordering
+// on the DE window, line/frame pixel counts, and frame triggers.
+// SPDX-License-Identifier: BSL-1.0
+
+#[test(test_video_signal_generator)]
+#[allow(unassign_variable)]
+module test_video_signal_generator {
+    inst clk: $tb::clock_gen;
+    inst rst: $tb::reset_gen (
+        clk: clk,
+    );
+
+    inst s_data: stream_if::<video_pkg::VideoSignal>;
+
+    var video     : video_pkg::VideoIO                          ;
+    var trigger   : logic                                       ;
+    var in_sync   : logic                                       ;
+    var cfg_valid : logic                                       ;
+    var cfg       : video_pkg::VideoConfig                      ;
+    var mult_valid: logic                                       ;
+    var mult      : video_pkg::VideoMultiplicationConfig::<8, 8>;
+    var v_active  : logic                                       ;
+
+    inst dut: video_signal_generator::<8, 8> #(
+        DefaultBackPorchV : 2,
+        DefaultPixelsV    : 4,
+        DefaultFrontPorchV: 1,
+        DefaultPulseWidthV: 1,
+        DefaultBackPorchH : 2,
+        DefaultPixelsH    : 8,
+        DefaultFrontPorchH: 2,
+        DefaultPulseWidthH: 2,
+    ) (
+        i_clk              : clk       ,
+        i_rst              : rst       ,
+        i_data             : s_data    ,
+        o_video            : video     ,
+        o_trigger_frame    : trigger   ,
+        o_data_in_sync     : in_sync   ,
+        i_config_valid     : cfg_valid ,
+        i_config           : cfg       ,
+        i_mult_config_valid: mult_valid,
+        i_mult_config      : mult      ,
+        o_v_active         : v_active  ,
+    );
+
+    var pixel_index  : logic<16>;
+    var expected     : logic<16>;
+    var de_count     : logic<16>;
+    var line_de      : logic<16>;
+    var trigger_count: logic<8> ;
+    var fired        : logic    ;
+
+    initial {
+        cfg_valid                     = '0;
+        cfg                           = 0 as video_pkg::VideoConfig;
+        mult_valid                    = '0;
+        mult.multiplier_h             = 1;
+        mult.multiplier_v             = 1;
+        s_data.valid                  = '0;
+        s_data.payload.pixel_data     = '0;
+        s_data.payload.start_of_frame = '0;
+        s_data.payload.end_of_line    = '0;
+        rst.assert                   (clk);
+
+        // Feed an endless pixel stream: value = index, SOF every 32
+        // pixels (one 8x4 frame worth).
+        pixel_index                   = '0;
+        s_data.valid                  = '1;
+        s_data.payload.pixel_data     = '0;
+        s_data.payload.start_of_frame = '1;
+
+        // Wait for sync acquisition (first active pixel consumes SOF)
+        for _i in 0..300 {
+            fired    = s_data.valid && s_data.ready;
+            clk.next(1);
+            if fired {
+                pixel_index                   = pixel_index + 1;
+                s_data.payload.pixel_data     = pixel_index;
+                s_data.payload.start_of_frame = (pixel_index & 16'h001f) == '0;
+            }
+            if in_sync {
+                break;
+            }
+        }
+        $assert(in_sync, "stream must sync on start_of_frame");
+
+        // Observe 3 frames worth of cycles (frame = 14 * 8 = 112)
+        expected      = '0;
+        de_count      = '0;
+        line_de       = '0;
+        trigger_count = '0;
+        for _c in 0..340 {
+            fired = s_data.valid && s_data.ready;
+            if video.data_enable {
+                $assert (video.pixel_data == expected, "DE pixels must appear in stream order");
+                expected = expected + 1;
+                de_count = de_count + 1;
+                line_de  = line_de + 1;
+            } else {
+                if line_de != '0 {
+                    $assert(line_de == 16'd8, "each line must have 8 DE pixels");
+                }
+                line_de = '0;
+            }
+            if trigger {
+                trigger_count = trigger_count + 1;
+            }
+            clk.next(1);
+            if fired {
+                pixel_index                   = pixel_index + 1;
+                s_data.payload.pixel_data     = pixel_index;
+                s_data.payload.start_of_frame = (pixel_index & 16'h001f) == '0;
+            }
+        }
+        $display("de_count=%d trigger_count=%d in_sync=%b", de_count, trigger_count, in_sync);
+        $assert (de_count >= 16'd64 && de_count <= 16'd104, "about 3 frames of DE pixels (32/frame)");
+        $assert (trigger_count >= 8'd2 && trigger_count <= 8'd4, "one frame trigger per frame");
+        $assert (in_sync, "must stay in sync while data is supplied");
+
+        $finish();
+    }
+}

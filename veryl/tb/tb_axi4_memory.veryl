@@ -1,0 +1,132 @@
+// tb_axi4_memory.veryl
+// Behavioral AXI4 slave memory for testbenches, with independent
+// read/write engines and burst support (equivalent role to Chisel's
+// AXI4Memory test helper).
+// SPDX-License-Identifier: BSL-1.0
+
+pub module tb_axi4_memory::<AddressBits: u32, DataBits: u32> #(
+    param MemWords: u32 = 64,
+) (
+    i_clk: input   clock                                  ,
+    i_rst: input   reset                                  ,
+    axi  : modport axi4_if::<AddressBits, DataBits>::slave,
+) {
+    const BYTES: u32 = DataBits / 8;
+    const SHIFT: u32 = $clog2(BYTES);
+
+    var mem: logic<DataBits> [MemWords];
+
+    // ---- Read engine ----
+    enum RState: logic {
+        idle,
+        data,
+    }
+    var rstate  : RState             ;
+    var raddr   : logic <AddressBits>;
+    var rcount  : logic <8>          ;
+    var rvalid_r: logic              ;
+    var rdata_r : logic <DataBits>   ;
+    var rlast_r : logic              ;
+
+    assign axi.arready = rstate == RState::idle;
+    assign axi.rvalid  = rvalid_r;
+    assign axi.r.data  = rdata_r;
+    assign axi.r.last  = rlast_r;
+    assign axi.r.resp  = axi4_pkg::Axi4Resp::okay;
+
+    always_ff {
+        if_reset {
+            rstate   = RState::idle;
+            rvalid_r = '0;
+            raddr    = '0;
+            rcount   = '0;
+            rlast_r  = '0;
+        } else {
+            if rvalid_r && axi.rready {
+                rvalid_r = '0;
+            }
+            case rstate {
+                RState::idle: {
+                    if axi.arvalid && axi.arready {
+                        raddr  = axi.ar.addr;
+                        rcount = axi.ar.len;
+                        rstate = RState::data;
+                    }
+                }
+                RState::data: {
+                    if !rvalid_r || axi.rready {
+                        rvalid_r =  '1;
+                        rdata_r  =  mem[raddr >> SHIFT];
+                        rlast_r  =  rcount == '0;
+                        raddr    += (BYTES as AddressBits);
+                        if rcount == '0 {
+                            rstate = RState::idle;
+                        } else {
+                            rcount -= 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // ---- Write engine ----
+    enum WState: logic<2> {
+        idle,
+        data,
+        resp,
+    }
+    var wstate: WState             ;
+    var waddr : logic <AddressBits>;
+    var wcount: logic <8>          ;
+
+    assign axi.awready = wstate == WState::idle;
+    assign axi.wready  = wstate == WState::data;
+    assign axi.bvalid  = wstate == WState::resp;
+    assign axi.b.resp  = axi4_pkg::Axi4Resp::okay;
+
+    // Merge write data into the current word using the byte strobes
+    var merged: logic<DataBits>;
+    always_comb {
+        merged = mem[waddr >> SHIFT];
+        for b in 0..DataBits {
+            if axi.w.strb[b / 8] {
+                merged[b] = axi.w.data[b];
+            }
+        }
+    }
+
+    always_ff {
+        if_reset {
+            wstate = WState::idle;
+            waddr  = '0;
+            wcount = '0;
+        } else {
+            case wstate {
+                WState::idle: {
+                    if axi.awvalid && axi.awready {
+                        waddr  = axi.aw.addr;
+                        wcount = axi.aw.len;
+                        wstate = WState::data;
+                    }
+                }
+                WState::data: {
+                    if axi.wvalid && axi.wready {
+                        mem[waddr >> SHIFT] =  merged;
+                        waddr               += (BYTES as AddressBits);
+                        if wcount == '0 {
+                            wstate = WState::resp;
+                        } else {
+                            wcount -= 1;
+                        }
+                    }
+                }
+                WState::resp: {
+                    if axi.bvalid && axi.bready {
+                        wstate = WState::idle;
+                    }
+                }
+            }
+        }
+    }
+}

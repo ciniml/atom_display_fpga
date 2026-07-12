@@ -1,0 +1,82 @@
+// command_pkg.veryl
+// Command processor related types.
+// Veryl port of atom_display command_processor.scala type definitions
+// (VideoClockConfig and command opcodes).
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+pub package command_pkg {
+    /// Video clock PLL configuration (Chisel: VideoClockConfig bundle).
+    /// Divider values feed the GOWIN rPLL dynamic reconfiguration ports
+    /// (fbdsel/idsel/odsel) in top.sv.
+    struct VideoClockConfig {
+        input_divider   : logic<16>,
+        output_divider  : logic<16>,
+        feedback_divider: logic<16>,
+        use_half_clock  : logic    ,
+    }
+
+    /// Chisel: VideoClockConfig.default()
+    function video_clock_config_default () -> VideoClockConfig {
+        var cfg                 : VideoClockConfig;
+        cfg.input_divider    = 16'd4;
+        cfg.output_divider   = 16'd8;
+        cfg.feedback_divider = 16'd4;
+        cfg.use_half_clock   = 1'b0;
+        return cfg;
+    }
+
+    /// Chisel: PresetVideoClocks.Default_74250000
+    function video_clock_config_74m25 () -> VideoClockConfig {
+        var cfg                 : VideoClockConfig;
+        cfg.input_divider    = 16'd1;
+        cfg.output_divider   = 16'd8;
+        cfg.feedback_divider = 16'd1;
+        cfg.use_half_clock   = 1'b0;
+        return cfg;
+    }
+
+    /// Chisel: PresetVideoClocks.FullHD_148500000
+    function video_clock_config_148m5 () -> VideoClockConfig {
+        var cfg                 : VideoClockConfig;
+        cfg.input_divider    = 16'd1;
+        cfg.output_divider   = 16'd4;
+        cfg.feedback_divider = 16'd2;
+        cfg.use_half_clock   = 1'b1;
+        return cfg;
+    }
+
+    /// Color space conversions to the native RGB565 format
+    /// (Chisel: RGB332ToNative / RGB888ToNative for pixelBits == 16).
+    function rgb332_to_rgb565 (
+        rgb332: input logic<8>,
+    ) -> logic<16> {
+        return {rgb332[7:5], rgb332[7:6], rgb332[4:2], rgb332[4:2], rgb332[1:0], rgb332[1:0], rgb332[1]};
+    }
+
+    function rgb888_to_rgb565 (
+        rgb888: input logic<24>,
+    ) -> logic<16> {
+        return {rgb888[23:19], rgb888[15:10], rgb888[7:3]};
+    }
+
+    // Single-byte commands (Chisel: object Commands)
+    const CMD_NOP              : logic<8> = 8'h00;
+    const CMD_READ_BUF_COUNT   : logic<8> = 8'h02;
+    const CMD_READ_ID          : logic<8> = 8'h04;
+    const CMD_SET_SCREEN_SCALE : logic<8> = 8'h18;
+    const CMD_SET_SCREEN_ORIGIN: logic<8> = 8'h19;
+    const CMD_COPY_RECT        : logic<8> = 8'h23;
+    const CMD_SET_RESOLUTION_V : logic<8> = 8'hb0;
+    const CMD_SET_RESOLUTION_H : logic<8> = 8'hb1;
+    const CMD_SET_VIDEO_CLOCK  : logic<8> = 8'hb2;
+
+    // Command type prefixes (Chisel: object CommandTypes)
+    const CMDTYPE_SET_COORD : logic<8> = 8'h28;
+    const CMDTYPE_WRITE_RAW : logic<8> = 8'h40;
+    const CMDTYPE_DRAW_PIXEL: logic<8> = 8'h60;
+    const CMDTYPE_FILL_RECT : logic<8> = 8'h68;
+
+    // Sub command numbers (Chisel: object CommandNumbers)
+    const CMDNUM_COLUMN_ADDRESS_SET: logic<8> = 8'h02;
+    const CMDNUM_ROW_ADDRESS_SET   : logic<8> = 8'h03;
+}

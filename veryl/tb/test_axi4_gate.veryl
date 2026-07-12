@@ -1,0 +1,92 @@
+// Unit test for axi4_gate (axi/axi4_gate.veryl): address channels are
+// blocked while enable is low and flow while high; R passes through.
+// SPDX-License-Identifier: BSL-1.0
+
+#[test(test_axi4_gate)]
+#[allow(unassign_variable)]
+module test_axi4_gate {
+    inst clk: $tb::clock_gen;
+    inst rst: $tb::reset_gen (
+        clk: clk,
+    );
+
+    inst m_axi: axi4_if::<16, 32>;
+    inst s_axi: axi4_if::<16, 32>;
+
+    var enable: logic;
+
+    inst dut: axi4_gate::<16, 32> (
+        i_clk   : clk   ,
+        i_rst   : rst   ,
+        i_enable: enable,
+        i_axi   : m_axi ,
+        o_axi   : s_axi ,
+    );
+
+    initial {
+        enable        = '0;
+        m_axi.arvalid = '0;
+        m_axi.ar.addr = '0;
+        m_axi.ar.len  = '0;
+        m_axi.rready  = '0;
+        m_axi.awvalid = '0;
+        m_axi.aw.addr = '0;
+        m_axi.aw.len  = '0;
+        m_axi.wvalid  = '0;
+        m_axi.w.data  = '0;
+        m_axi.w.strb  = '0;
+        m_axi.w.last  = '0;
+        m_axi.bready  = '0;
+        // Slave side driven by the test
+        s_axi.arready = '1;
+        s_axi.awready = '1;
+        s_axi.rvalid  = '0;
+        s_axi.r.data  = '0;
+        s_axi.r.resp  = axi4_pkg::Axi4Resp::okay;
+        s_axi.r.last  = '0;
+        s_axi.wready  = '1;
+        s_axi.bvalid  = '0;
+        s_axi.b.resp  = axi4_pkg::Axi4Resp::okay;
+        rst.assert   (clk);
+
+        // Gate closed: AR must not pass
+        m_axi.arvalid = '1;
+        m_axi.ar.addr = 16'h1234;
+        m_axi.ar.len  = 8'd0;
+        $assert      (m_axi.arready == '0, "input must be stalled while gate is closed");
+        clk.next     (4);
+        $assert      (s_axi.arvalid == '0, "AR must not pass while gate is closed");
+
+        // Open the gate: AR passes (registered, so one cycle later)
+        enable        = '1;
+        $assert      (m_axi.arready == '1, "input accepted when gate opens");
+        clk.next     (1);
+        $assert      (s_axi.arvalid == '1, "AR must pass after gate opens");
+        $assert      (s_axi.ar.addr == 16'h1234);
+        m_axi.arvalid = '0;
+        clk.next     (1);
+        $assert      (s_axi.arvalid == '0, "AR valid must clear after accept");
+
+        // R channel passes through combinationally regardless of enable
+        enable       = '0;
+        m_axi.rready = '1;
+        s_axi.rvalid = '1;
+        s_axi.r.data = 32'hcafe_beef;
+        s_axi.r.last = '1;
+        $assert     (m_axi.rvalid == '1, "R must pass through");
+        $assert     (m_axi.r.data == 32'hcafe_beef);
+        $assert     (s_axi.rready == '1, "R ready must pass through");
+
+        // W/B pass through combinationally as well
+        m_axi.wvalid = '1;
+        m_axi.w.data = 32'h1122_3344;
+        $assert     (s_axi.wvalid == '1, "W must pass through");
+        $assert     (s_axi.w.data == 32'h1122_3344);
+        s_axi.bvalid = '1;
+        m_axi.bready = '1;
+        $assert     (m_axi.bvalid == '1, "B must pass through");
+        $assert     (s_axi.bready == '1);
+
+        $finish();
+    }
+}

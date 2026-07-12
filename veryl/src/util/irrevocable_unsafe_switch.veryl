@@ -1,0 +1,60 @@
+// irrevocable_unsafe_switch.veryl
+// Combinational (unregistered) stream mux/demux with a select input.
+// "Unsafe" because switching the select mid-transfer can violate the
+// irrevocable contract; the command processor only switches while the
+// streams are quiescent. select == N disables all channels.
+// Veryl port of fpga_samples irrevocableswitch.scala
+// (IrrevocableUnsafeMux / IrrevocableUnsafeDemux).
+// SPDX-License-Identifier: BSL-1.0
+
+pub module irrevocable_unsafe_mux::<T: type> #(
+    param N: u32 = 4,
+) (
+    i_data  : modport stream_if::<T>::slave                 [N],
+    o_data  : modport stream_if::<T>::master                   ,
+    i_select: input   logic                 <$clog2(N + 1)>    ,
+) {
+    const SEL_BITS: u32 = $clog2(N + 1);
+
+    var valids: logic<N>    ;
+    var pays  : T        [N];
+
+    for i in 0..N :g_in {
+        assign valids[i]       = i_data[i].valid;
+        assign pays[i]         = i_data[i].payload;
+        assign i_data[i].ready = (i_select == (i as SEL_BITS)) && o_data.ready;
+    }
+
+    let sel_in_range: logic           = i_select <: (N as SEL_BITS);
+    let sel_clamped : logic<SEL_BITS> = if sel_in_range ? i_select : '0;
+
+    always_comb {
+        o_data.valid   = if sel_in_range ? valids[sel_clamped] : '0;
+        o_data.payload = pays[sel_clamped];
+    }
+}
+
+pub module irrevocable_unsafe_demux::<T: type> #(
+    param N: u32 = 4,
+) (
+    i_data  : modport stream_if::<T>::slave                    ,
+    o_data  : modport stream_if::<T>::master                [N],
+    i_select: input   logic                 <$clog2(N + 1)>    ,
+) {
+    const SEL_BITS: u32 = $clog2(N + 1);
+
+    var readys: logic<N>;
+
+    for i in 0..N :g_out {
+        assign o_data[i].valid   = (i_select == (i as SEL_BITS)) && i_data.valid;
+        assign o_data[i].payload = i_data.payload;
+        assign readys[i]         = o_data[i].ready;
+    }
+
+    let sel_in_range: logic           = i_select <: (N as SEL_BITS);
+    let sel_clamped : logic<SEL_BITS> = if sel_in_range ? i_select : '0;
+
+    always_comb {
+        i_data.ready = if sel_in_range ? readys[sel_clamped] : '0;
+    }
+}

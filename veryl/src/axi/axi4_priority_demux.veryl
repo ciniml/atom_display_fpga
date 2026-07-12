@@ -1,0 +1,187 @@
+// axi4_priority_demux.veryl
+// AXI4 arbiter: multiple masters share one slave, lower index = higher
+// priority. One transaction (read burst / write burst + response) is
+// in flight at a time. Reads win ties (arIndex <= awIndex).
+// Veryl port of fpga_samples axi4_switch.scala (AXI4PriorityDemux).
+// The Chisel version takes per-master modes (MixedVec); here all
+// masters expose full interfaces and unused channels are tied off
+// (axi4_write_tieoff / axi4_read_tieoff), which never assert valid.
+// SPDX-License-Identifier: BSL-1.0
+
+pub module axi4_priority_demux::<AddressBits: u32, DataBits: u32> #(
+    param NumMasters: u32 = 3,
+) (
+    i_clk: input   clock                                                ,
+    i_rst: input   reset                                                ,
+    i_axi: modport axi4_if::<AddressBits, DataBits>::slave  [NumMasters],
+    o_axi: modport axi4_if::<AddressBits, DataBits>::master             ,
+) {
+    const INDEX_BITS: u32 = $clog2(NumMasters + 1);
+
+    enum State: logic<2> {
+        idle,
+        read_transfer,
+        write_transfer,
+        write_resp,
+    }
+
+    var state      : State            ;
+    var input_index: logic<INDEX_BITS>;
+    var count      : logic<8>         ;
+
+    // Flattened copies of per-master signals
+    var ar_valid: logic                         <NumMasters>             ;
+    var aw_valid: logic                         <NumMasters>             ;
+    var w_valid : logic                         <NumMasters>             ;
+    var r_ready : logic                         <NumMasters>             ;
+    var b_ready : logic                         <NumMasters>             ;
+    var ar_pay  : axi4_pkg::Axi4A::<AddressBits>             [NumMasters];
+    var aw_pay  : axi4_pkg::Axi4A::<AddressBits>             [NumMasters];
+    var w_pay   : axi4_pkg::Axi4W::<DataBits>                [NumMasters];
+
+    var port_ar_ready: logic<NumMasters>;
+    var port_aw_ready: logic<NumMasters>;
+
+    for i in 0..NumMasters :g_conn {
+        assign ar_valid[i] = i_axi[i].arvalid;
+        assign aw_valid[i] = i_axi[i].awvalid;
+        assign w_valid[i]  = i_axi[i].wvalid;
+        assign r_ready[i]  = i_axi[i].rready;
+        assign b_ready[i]  = i_axi[i].bready;
+        assign ar_pay[i]   = i_axi[i].ar;
+        assign aw_pay[i]   = i_axi[i].aw;
+        assign w_pay[i]    = i_axi[i].w;
+
+        assign i_axi[i].arready = port_ar_ready[i];
+        assign i_axi[i].awready = port_aw_ready[i];
+        assign i_axi[i].wready  = (input_index == (i as INDEX_BITS)) && o_axi.wready
+            && (state == State::write_transfer);
+        assign i_axi[i].rvalid  = (input_index == (i as INDEX_BITS)) && o_axi.rvalid && (state == State::read_transfer);
+        assign i_axi[i].r       = o_axi.r;
+        assign i_axi[i].bvalid  = (input_index == (i as INDEX_BITS)) && o_axi.bvalid && (state == State::write_resp);
+        assign i_axi[i].b       = o_axi.b;
+    }
+
+    // Priority encoders (lowest index wins)
+    var ar_index: logic<INDEX_BITS>;
+    var aw_index: logic<INDEX_BITS>;
+    always_comb {
+        ar_index = NumMasters as INDEX_BITS;
+        aw_index = NumMasters as INDEX_BITS;
+        for i in 0..NumMasters {
+            let idx: u32 = NumMasters - 1 - i;
+            if ar_valid[idx] {
+                ar_index = idx as INDEX_BITS;
+            }
+            if aw_valid[idx] {
+                aw_index = idx as INDEX_BITS;
+            }
+        }
+    }
+
+    let has_read   : logic = ar_valid != '0;
+    let has_write  : logic = aw_valid != '0;
+    let read_grant : logic = (state == State::idle) && has_read && (!has_write || (ar_index <= aw_index));
+    let write_grant: logic = (state == State::idle) && has_write && (!has_read || (aw_index <: ar_index));
+
+    always_comb {
+        port_ar_ready = '0;
+        port_aw_ready = '0;
+        if read_grant {
+            port_ar_ready[ar_index] = o_axi.arready;
+        }
+        if write_grant {
+            port_aw_ready[aw_index] = o_axi.awready;
+        }
+    }
+
+    // Registered AR/AW toward the slave
+    var ar_valid_r: logic                         ;
+    var aw_valid_r: logic                         ;
+    var ar_pay_r  : axi4_pkg::Axi4A::<AddressBits>;
+    var aw_pay_r  : axi4_pkg::Axi4A::<AddressBits>;
+
+    assign o_axi.arvalid = ar_valid_r;
+    assign o_axi.ar      = ar_pay_r;
+    assign o_axi.awvalid = aw_valid_r;
+    assign o_axi.aw      = aw_pay_r;
+
+    // W/R/B muxes toward the slave (index clamped for simulation safety;
+    // only used in states entered with a valid input_index)
+    let sel: logic<INDEX_BITS> = if input_index <: (NumMasters as INDEX_BITS) ? input_index : '0;
+    always_comb {
+        o_axi.wvalid = (state == State::write_transfer) && w_valid[sel];
+        o_axi.w      = w_pay[sel];
+        o_axi.rready = (state == State::read_transfer) && r_ready[sel];
+        o_axi.bready = (state == State::write_resp) && b_ready[sel];
+    }
+
+    always_ff {
+        if_reset {
+            state       = State::idle;
+            input_index = NumMasters as INDEX_BITS; // no input selected
+            ar_valid_r  = '0;
+            aw_valid_r  = '0;
+            count       = '0;
+        } else {
+            if ar_valid_r && o_axi.arready {
+                ar_valid_r = '0;
+            }
+            if aw_valid_r && o_axi.awready {
+                aw_valid_r = '0;
+            }
+            case state {
+                State::idle: {
+                    if write_grant {
+                        input_index = aw_index;
+                        if !aw_valid_r {
+                            aw_valid_r = '1;
+                            count      = aw_pay[aw_index].len;
+                        }
+                        if o_axi.awready {
+                            state = State::write_transfer;
+                        }
+                    } else if read_grant {
+                        input_index = ar_index;
+                        if !ar_valid_r {
+                            ar_valid_r = '1;
+                        }
+                        if o_axi.arready {
+                            state = State::read_transfer;
+                        }
+                    }
+                }
+                State::read_transfer: {
+                    if o_axi.rvalid && o_axi.rready && o_axi.r.last {
+                        state       = State::idle;
+                        input_index = NumMasters as INDEX_BITS;
+                    }
+                }
+                State::write_transfer: {
+                    if o_axi.wvalid && o_axi.wready {
+                        count -= 1;
+                        if count == '0 {
+                            state = State::write_resp;
+                        }
+                    }
+                }
+                State::write_resp: {
+                    if o_axi.bvalid && o_axi.bready {
+                        state       = State::idle;
+                        input_index = NumMasters as INDEX_BITS;
+                    }
+                }
+            }
+        }
+    }
+
+    // Latched AR/AW payloads (no reset, like Chisel Reg)
+    always_ff {
+        if write_grant && !aw_valid_r {
+            aw_pay_r = aw_pay[aw_index];
+        }
+        if read_grant && !ar_valid_r {
+            ar_pay_r = ar_pay[ar_index];
+        }
+    }
+}

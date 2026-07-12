@@ -1,0 +1,23 @@
+// Unit test for axi4_if (axi/axi4_if.veryl)
+// SPDX-License-Identifier: BSL-1.0
+
+#[test(test_axi4_if)]
+#[allow(unassign_variable)]
+module test_axi4_if {
+    inst axi: axi4_if::<24, 32>;
+
+    initial {
+        $assert    ($bits(axi.w.strb) == 4);
+        $assert    ($bits(axi.ar.addr) == 24);
+        $assert    ($bits(axi.r.data) == 32);
+        axi.arvalid = 1'b1;
+        axi.ar.addr = 24'h123456;
+        axi.ar.len  = 8'd79;
+        axi.arready = 1'b1;
+        $assert    (axi.arvalid && axi.arready);
+        $assert    (axi.ar.addr == 24'h123456);
+        axi.r.resp  = axi4_pkg::Axi4Resp::okay;
+        $assert    (axi.r.resp == axi4_pkg::Axi4Resp::okay);
+        $finish    ();
+    }
+}

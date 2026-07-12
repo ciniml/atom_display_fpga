@@ -1,0 +1,10 @@
+// stream_test_pkg.veryl
+// Small payload-type alias used to instantiate the generic stream/FIFO
+// modules with a concrete type in unit tests. Kept in src (not tb) so
+// the test-only generic specializations emitted into the module SV
+// files resolve during synthesis as well.
+// SPDX-License-Identifier: BSL-1.0
+
+pub package stream_test_pkg {
+    type byte_t = logic<8>;
+}

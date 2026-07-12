@@ -1,0 +1,38 @@
+// stream_if.veryl
+// Irrevocable (valid/ready) stream interface.
+// Veryl port of Chisel's Irrevocable[T] handshake used across the design.
+// SPDX-License-Identifier: BSL-1.0
+
+/// Valid/ready handshake stream carrying a payload of type T.
+/// Semantics follow AXI4-Stream / Chisel Irrevocable: once `valid` is
+/// asserted, payload must be held stable until `ready` accepts it.
+pub interface stream_if::<T: type> {
+    var valid  : logic;
+    var ready  : logic;
+    var payload: T    ;
+
+    function fire () -> logic {
+        return valid & ready;
+    }
+
+    modport master {
+        valid  : output,
+        ready  : input ,
+        payload: output,
+        fire   : import,
+    }
+
+    modport slave {
+        valid  : input ,
+        ready  : output,
+        payload: input ,
+        fire   : import,
+    }
+
+    modport monitor {
+        valid  : input ,
+        ready  : input ,
+        payload: input ,
+        fire   : import,
+    }
+}

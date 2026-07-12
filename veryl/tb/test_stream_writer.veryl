@@ -1,0 +1,225 @@
+// Unit test for stream_writer / line_writer with tb_axi4_memory.
+// Geometry: 16x8 pixels (line stride 32 bytes), 16bpp.
+// Verifies fill rect with unaligned (odd) start X including byte
+// strobes, and a streamed pixel write, by reading memory back through
+// the same AXI interface's read channels (unused by the writer).
+// SPDX-License-Identifier: BSL-1.0
+
+#[test(test_stream_writer)]
+#[allow(unassign_variable)]
+module test_stream_writer {
+    inst clk: $tb::clock_gen;
+    inst rst: $tb::reset_gen (
+        clk: clk,
+    );
+
+    inst axi   : axi4_if::<10, 32>;
+    inst s_data: stream_if::<video_pkg::VideoSignal>;
+
+    var cmd_valid: logic                                      ;
+    var cmd_ready: logic                                      ;
+    var cmd      : video_pkg::StreamWriterCommand::<10, 16, 8>;
+    var busy     : logic                                      ;
+
+    inst dut: stream_writer::<10, 16, 8, 8, 16> (
+        i_clk          : clk      ,
+        i_rst          : rst      ,
+        i_command_valid: cmd_valid,
+        o_command_ready: cmd_ready,
+        i_command      : cmd      ,
+        i_data         : s_data   ,
+        axi            : axi      ,
+        o_busy         : busy     ,
+    );
+
+    inst memory: tb_axi4_memory::<10, 32> #(
+        MemWords: 256,
+    ) (
+        i_clk: clk,
+        i_rst: rst,
+        axi  : axi,
+    );
+
+    var rword: logic<32>;
+
+    function read_word_addr (
+        waddr: input u32,
+    ) -> logic<10> {
+        return (waddr * 4) as 10;
+    }
+
+    initial {
+        cmd_valid                     = '0;
+        cmd.address_offset            = '0;
+        cmd.start_x                   = '0;
+        cmd.end_x_inclusive           = '0;
+        cmd.start_y                   = '0;
+        cmd.end_y_inclusive           = '0;
+        cmd.do_fill                   = '0;
+        cmd.color                     = '0;
+        s_data.valid                  = '0;
+        s_data.payload.pixel_data     = '0;
+        s_data.payload.start_of_frame = '0;
+        s_data.payload.end_of_line    = '0;
+        // TB drives the read channels (unused by the writer)
+        axi.arvalid = '0;
+        axi.ar.addr = '0;
+        axi.ar.len  = '0;
+        axi.rready  = '1;
+        rst.assert (clk);
+        clk.next   (2);
+
+        // ---- Fill rect: x=3..10, y=1..2, color 0x1234 ----
+        cmd.start_x         = 3;
+        cmd.end_x_inclusive = 10;
+        cmd.start_y         = 1;
+        cmd.end_y_inclusive = 2;
+        cmd.do_fill         = '1;
+        cmd.color           = 16'h1234;
+        cmd_valid           = '1;
+        for _i in 0..10 {
+            if cmd_ready {
+                break;
+            }
+            clk.next(1);
+        }
+        $assert  (cmd_ready, "fill command must be accepted");
+        clk.next (1);
+        cmd_valid = '0;
+
+        for _i in 0..500 {
+            if !busy {
+                break;
+            }
+            clk.next(1);
+        }
+        $assert (!busy, "fill must complete");
+        clk.next(2);
+
+        // Line 1 pixels 3..10 occupy bytes 38..53 (words 9..13).
+        // word 9  = bytes 36..39: only 38,39 written -> 0x1234_0000
+        // word 10..12 = fully written -> 0x1234_1234
+        // word 13 = bytes 52..55: only 52,53 written -> 0x0000_1234
+        // Line 2 same pattern at words 17..21.
+        for row in 0..2 {
+            axi.arvalid = '1;
+            axi.ar.addr = read_word_addr(9 + row * 8);
+            axi.ar.len  = 8'd4;
+            for _i in 0..20 {
+                if axi.arready {
+                    break;
+                }
+                clk.next(1);
+            }
+            clk.next   (1);
+            axi.arvalid = '0;
+            for beat in 0..5 {
+                for _i in 0..20 {
+                    if axi.rvalid {
+                        break;
+                    }
+                    clk.next(1);
+                }
+                $assert(axi.rvalid, "readback beat must arrive");
+                rword   = axi.r.data;
+                if beat == 0 {
+                    $assert(rword == 32'h1234_0000, "partial first word (odd start X)");
+                } else if beat <= 3 {
+                    $assert(rword == 32'h1234_1234, "full middle words");
+                } else {
+                    $assert(rword == 32'h0000_1234, "partial last word");
+                }
+                clk.next(1);
+            }
+        }
+
+        // Untouched line 0 stays zero
+        axi.arvalid = '1;
+        axi.ar.addr = read_word_addr(1);
+        axi.ar.len  = 8'd0;
+        for _i in 0..20 {
+            if axi.arready {
+                break;
+            }
+            clk.next(1);
+        }
+        clk.next   (1);
+        axi.arvalid = '0;
+        for _i in 0..20 {
+            if axi.rvalid {
+                break;
+            }
+            clk.next(1);
+        }
+        $assert (axi.r.data == 32'h0000_0000, "outside the rect must stay 0");
+        clk.next(2);
+
+        // ---- Streamed write: x=0..7, y=4, pixels 0xa100..0xa107 ----
+        cmd.start_x         = 0;
+        cmd.end_x_inclusive = 7;
+        cmd.start_y         = 4;
+        cmd.end_y_inclusive = 4;
+        cmd.do_fill         = '0;
+        cmd_valid           = '1;
+        for _i in 0..10 {
+            if cmd_ready {
+                break;
+            }
+            clk.next(1);
+        }
+        clk.next (1);
+        cmd_valid = '0;
+
+        s_data.valid = '1;
+        for p in 0..8 {
+            s_data.payload.pixel_data = (16'ha100 + p) as 16;
+            for _i in 0..40 {
+                if s_data.ready {
+                    break;
+                }
+                clk.next(1);
+            }
+            $assert (s_data.ready, "pixel must be consumed");
+            clk.next(1);
+        }
+        s_data.valid = '0;
+
+        for _i in 0..500 {
+            if !busy {
+                break;
+            }
+            clk.next(1);
+        }
+        $assert (!busy, "stream write must complete");
+        clk.next(2);
+
+        // Line 4 = words 32..35: {p1,p0} {p3,p2} {p5,p4} {p7,p6}
+        axi.arvalid = '1;
+        axi.ar.addr = read_word_addr(32);
+        axi.ar.len  = 8'd3;
+        for _i in 0..20 {
+            if axi.arready {
+                break;
+            }
+            clk.next(1);
+        }
+        clk.next   (1);
+        axi.arvalid = '0;
+        for beat in 0..4 {
+            for _i in 0..20 {
+                if axi.rvalid {
+                    break;
+                }
+                clk.next(1);
+            }
+            $assert (axi.rvalid);
+            $assert (
+                axi.r.data == ((32'ha101_a100 + (beat * 32'h0002_0002)) as 32),
+                "streamed pixels must land in order",
+            );
+            clk.next(1);
+        }
+
+        $finish();
+    }
+}

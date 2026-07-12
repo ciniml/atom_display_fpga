@@ -1,0 +1,256 @@
+// Unit test for axi4_priority_demux (axi/axi4_priority_demux.veryl)
+// Mirrors the design's usage: master 0 = frame buffer reader (RO),
+// master 1 = stream writer (WO), master 2 = stream reader (RO),
+// sharing one tb_axi4_memory slave.
+//
+// The native simulator does not support procedural access to struct
+// members through interface-array elements, so the test drives plain
+// variables and connects them with continuous assigns.
+// SPDX-License-Identifier: BSL-1.0
+
+#[test(test_axi4_priority_demux)]
+#[allow(unassign_variable)]
+module test_axi4_priority_demux {
+    inst clk: $tb::clock_gen;
+    inst rst: $tb::reset_gen (
+        clk: clk,
+    );
+
+    inst m_axi: axi4_if::<16, 32> [3];
+    inst s_axi: axi4_if::<16, 32>;
+
+    inst dut: axi4_priority_demux::<16, 32> #(
+        NumMasters: 3,
+    ) (
+        i_clk: clk  ,
+        i_rst: rst  ,
+        i_axi: m_axi,
+        o_axi: s_axi,
+    );
+
+    inst memory: tb_axi4_memory::<16, 32> (
+        i_clk: clk  ,
+        i_rst: rst  ,
+        axi  : s_axi,
+    );
+
+    // Master 0 (read-only) drive/observe
+    var m0_arvalid: logic                ;
+    var m0_ar     : axi4_pkg::Axi4A::<16>;
+    var m0_arready: logic                ;
+    var m0_rvalid : logic                ;
+    var m0_r      : axi4_pkg::Axi4R::<32>;
+
+    assign m_axi[0].arvalid = m0_arvalid;
+    assign m_axi[0].ar      = m0_ar;
+    assign m_axi[0].rready  = '1;
+    assign m0_arready       = m_axi[0].arready;
+    assign m0_rvalid        = m_axi[0].rvalid;
+    assign m0_r             = m_axi[0].r;
+    // write channels tied off
+    assign m_axi[0].awvalid = '0;
+    assign m_axi[0].aw      = 0 as axi4_pkg::Axi4A::<16>;
+    assign m_axi[0].wvalid  = '0;
+    assign m_axi[0].w       = 0 as axi4_pkg::Axi4W::<32>;
+    assign m_axi[0].bready  = '0;
+
+    // Master 1 (write-only) drive/observe
+    var m1_awvalid: logic                ;
+    var m1_aw     : axi4_pkg::Axi4A::<16>;
+    var m1_awready: logic                ;
+    var m1_wvalid : logic                ;
+    var m1_w      : axi4_pkg::Axi4W::<32>;
+    var m1_wready : logic                ;
+    var m1_bvalid : logic                ;
+
+    assign m_axi[1].awvalid = m1_awvalid;
+    assign m_axi[1].aw      = m1_aw;
+    assign m_axi[1].wvalid  = m1_wvalid;
+    assign m_axi[1].w       = m1_w;
+    assign m_axi[1].bready  = '1;
+    assign m1_awready       = m_axi[1].awready;
+    assign m1_wready        = m_axi[1].wready;
+    assign m1_bvalid        = m_axi[1].bvalid;
+    // read channels tied off
+    assign m_axi[1].arvalid = '0;
+    assign m_axi[1].ar      = 0 as axi4_pkg::Axi4A::<16>;
+    assign m_axi[1].rready  = '0;
+
+    // Master 2 (read-only) drive/observe
+    var m2_arvalid: logic                ;
+    var m2_ar     : axi4_pkg::Axi4A::<16>;
+    var m2_arready: logic                ;
+    var m2_rvalid : logic                ;
+    var m2_r      : axi4_pkg::Axi4R::<32>;
+
+    assign m_axi[2].arvalid = m2_arvalid;
+    assign m_axi[2].ar      = m2_ar;
+    assign m_axi[2].rready  = '1;
+    assign m2_arready       = m_axi[2].arready;
+    assign m2_rvalid        = m_axi[2].rvalid;
+    assign m2_r             = m_axi[2].r;
+    // write channels tied off
+    assign m_axi[2].awvalid = '0;
+    assign m_axi[2].aw      = 0 as axi4_pkg::Axi4A::<16>;
+    assign m_axi[2].wvalid  = '0;
+    assign m_axi[2].w       = 0 as axi4_pkg::Axi4W::<32>;
+    assign m_axi[2].bready  = '0;
+
+    initial {
+        m0_arvalid = '0;
+        m0_ar.addr = '0;
+        m0_ar.len  = '0;
+        m1_awvalid = '0;
+        m1_aw.addr = '0;
+        m1_aw.len  = '0;
+        m1_wvalid  = '0;
+        m1_w.data  = '0;
+        m1_w.strb  = '0;
+        m1_w.last  = '0;
+        m2_arvalid = '0;
+        m2_ar.addr = '0;
+        m2_ar.len  = '0;
+        rst.assert(clk);
+        clk.next  (2);
+
+        // --- Master 1 writes a 4-beat burst to 0x0020 ---
+        m1_awvalid = '1;
+        m1_aw.addr = 16'h0020;
+        m1_aw.len  = 8'd3;
+        for _i in 0..20 {
+            if m1_awready {
+                break;
+            }
+            clk.next(1);
+        }
+        $assert   (m1_awready, "AW(1) must be granted");
+        clk.next  (1);
+        m1_awvalid = '0;
+
+        m1_wvalid = '1;
+        m1_w.strb = 4'hf;
+        for beat in 0..4 {
+            m1_w.data = (32'hab00_0000 + beat) as 32;
+            m1_w.last = beat == 3;
+            for _i in 0..20 {
+                if m1_wready {
+                    break;
+                }
+                clk.next(1);
+            }
+            $assert (m1_wready, "W(1) beat must be accepted");
+            clk.next(1);
+        }
+        m1_wvalid = '0;
+
+        for _i in 0..20 {
+            if m1_bvalid {
+                break;
+            }
+            clk.next(1);
+        }
+        $assert (m1_bvalid, "B(1) must arrive");
+        clk.next(2);
+
+        // --- Concurrent requests: AR(0), AW(1), AR(2) all pending.
+        // Master 0 must win (lowest index, reads win ties).
+        m0_arvalid = '1;
+        m0_ar.addr = 16'h0020;
+        m0_ar.len  = 8'd3;
+        m2_arvalid = '1;
+        m2_ar.addr = 16'h0028;
+        m2_ar.len  = 8'd1;
+        m1_awvalid = '1;
+        m1_aw.addr = 16'h0030;
+        m1_aw.len  = 8'd0;
+        clk.next  (1);
+
+        $assert(m2_arready == '0, "master 2 must not be granted while master 0 requests");
+        $assert(m1_awready == '0, "master 1 must not be granted while master 0 requests");
+
+        for _i in 0..20 {
+            if m0_arready {
+                break;
+            }
+            clk.next(1);
+        }
+        $assert   (m0_arready, "AR(0) must be granted first");
+        clk.next  (1);
+        m0_arvalid = '0;
+
+        // Master 0 reads back what master 1 wrote
+        for beat in 0..4 {
+            for _i in 0..20 {
+                if m0_rvalid {
+                    break;
+                }
+                clk.next(1);
+            }
+            $assert(m0_rvalid, "R(0) beat must arrive");
+            $assert(m2_rvalid == '0, "R must never target two masters");
+            $assert(m0_r.data == (32'hab00_0000 + beat) as 32, "read data must match master 1's write");
+            if beat == 3 {
+                $assert(m0_r.last);
+            }
+            clk.next(1);
+        }
+
+        // --- After master 0 finishes: AW(1) vs AR(2) -> write wins (1 < 2) ---
+        for _i in 0..20 {
+            if m1_awready {
+                break;
+            }
+            clk.next(1);
+        }
+        $assert   (m1_awready, "AW(1) must be granted before AR(2)");
+        $assert   (m2_arready == '0, "master 2 must wait for master 1's write");
+        clk.next  (1);
+        m1_awvalid = '0;
+
+        m1_wvalid = '1;
+        m1_w.data = 32'h5555_aaaa;
+        m1_w.strb = 4'hf;
+        m1_w.last = '1;
+        for _i in 0..20 {
+            if m1_wready {
+                break;
+            }
+            clk.next(1);
+        }
+        $assert  (m1_wready);
+        clk.next (1);
+        m1_wvalid = '0;
+        for _i in 0..20 {
+            if m1_bvalid {
+                break;
+            }
+            clk.next(1);
+        }
+        $assert(m1_bvalid, "B(1) second write must complete");
+
+        // --- Finally master 2's read is served ---
+        for _i in 0..20 {
+            if m2_arready {
+                break;
+            }
+            clk.next(1);
+        }
+        $assert   (m2_arready, "AR(2) must be granted last");
+        clk.next  (1);
+        m2_arvalid = '0;
+
+        for beat in 0..2 {
+            for _i in 0..20 {
+                if m2_rvalid {
+                    break;
+                }
+                clk.next(1);
+            }
+            $assert (m2_rvalid, "R(2) beat must arrive");
+            $assert (m2_r.data == (32'hab00_0002 + beat) as 32, "master 2 reads 0x28-0x2c");
+            clk.next(1);
+        }
+
+        $finish();
+    }
+}

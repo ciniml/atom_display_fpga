@@ -1,0 +1,215 @@
+// line_reader.veryl
+// Reads one line of pixels from the frame buffer over AXI4 (read-only,
+// burst) and outputs a pixel stream, handling unaligned start addresses
+// with a byte realignment buffer.
+// Veryl port of fpga_samples stream_reader.scala (LineReader),
+// specialized to the design's fixed 16bpp pixels / 32-bit bus
+// (the Chisel original also supports 24bpp).
+// SPDX-License-Identifier: BSL-1.0
+
+// The command is a plain valid/ready/payload port triple instead of a
+// stream_if: nested generics (LineReaderCommand::<A, W>) are not
+// accepted as interface generic args at port positions, and opaque
+// type parameters do not allow member access.
+pub module line_reader::<AddressBits: u32, MaxWidth: u32, BurstPixels: u32, MaxBurstLength: u32> (
+    i_clk          : input   clock                                                ,
+    i_rst          : input   reset                                                ,
+    i_command_valid: input   logic                                                ,
+    o_command_ready: output  logic                                                ,
+    i_command      : input   video_pkg::LineReaderCommand::<AddressBits, MaxWidth>,
+    o_data         : modport stream_if::<video_pkg::VideoSignal>::master          ,
+    axi            : modport axi4_if::<AddressBits, 32>::read_master              ,
+    o_busy         : output  logic                                                ,
+) {
+    const PIXEL_BYTES     : u32 = video_pkg::PIXEL_BYTES; // 2 (16bpp)
+    const DATA_BYTES      : u32 = 4; // 32-bit bus
+    const ADDR_MASK_BITS  : u32 = 2;
+    const READ_BURST_WORDS: u32 = BurstPixels * PIXEL_BYTES / DATA_BYTES;
+    const COUNT_H_BITS    : u32 = $clog2(MaxWidth + 1);
+    const WORDS_BITS      : u32 = $clog2(PIXEL_BYTES * MaxWidth);
+    const BYTES_BITS      : u32 = WORDS_BITS + 2;
+
+    enum State: logic<2> {
+        s_idle,
+        s_decode,
+        s_running,
+    }
+    var state: State;
+
+    var command: video_pkg::LineReaderCommand::<AddressBits, MaxWidth>;
+
+    let start_address_aligned: logic<AddressBits> = {command.start_address[AddressBits - 1:ADDR_MASK_BITS], 2'b00};
+    let bytes_to_transfer    : logic<BYTES_BITS>  = ({1'b0 repeat BYTES_BITS - 2, command.start_address[1:0]})
+        + ({1'b0 repeat BYTES_BITS - COUNT_H_BITS - 1, command.count, 1'b0});
+    let words_to_transfer    : logic<WORDS_BITS>  = ((bytes_to_transfer + 3) >> 2) as WORDS_BITS;
+
+    var next_address               : logic<AddressBits> ;
+    var address_words_remaining    : logic<WORDS_BITS>  ;
+    var data_words_remaining       : logic<WORDS_BITS>  ;
+    var issued_data_words_remaining: logic<WORDS_BITS>  ;
+    var pixels_remaining           : logic<COUNT_H_BITS>;
+
+    // Realignment buffer: in = 4-byte bus words, out = 2-byte pixels.
+    // 8-byte double buffer, 4-bit wrap-around pointers (index + side).
+    var realign_buffer        : logic<8> [8];
+    var realign_input_pointer : logic<4>    ;
+    var realign_output_pointer: logic<4>    ;
+
+    function advance_pointer (
+        pointer: input logic<4>,
+        adv    : input u32     ,
+    ) -> logic<4> {
+        return if pointer <: ((16 - adv) as 4) ? pointer + (adv as 4) : 4'd0;
+    }
+
+    let in_idx  : logic<3> = realign_input_pointer[2:0];
+    let out_idx : logic<3> = realign_output_pointer[2:0];
+    let in_side : logic    = realign_input_pointer[3];
+    let out_side: logic    = realign_output_pointer[3];
+
+    let realign_full : logic = (({1'b0, in_idx} + 4) >: {1'b0, out_idx}) && (in_side != out_side);
+    let realign_empty: logic = (({1'b0, out_idx} + 2) >: {1'b0, in_idx}) && (in_side == out_side);
+
+    // 16bpp: pixel phase = start_address[1], realign index = phase * 2.
+    let initial_pointer: logic<4> = {2'b00, command.start_address[1], 1'b0};
+
+    // AR channel (registered)
+    var ar_valid: logic             ;
+    var ar_addr : logic<AddressBits>;
+    var ar_len  : logic<8>          ;
+
+    assign axi.arvalid = ar_valid;
+    assign axi.ar.addr = ar_addr;
+    assign axi.ar.len  = ar_len;
+
+    // R channel through a large queue (Chisel: Queue(io.axi.r, 2048))
+    inst r_enq: stream_if::<axi4_pkg::Axi4R::<32>>;
+    inst r_deq: stream_if::<axi4_pkg::Axi4R::<32>>;
+
+    inst u_r_fifo: sync_fifo::<axi4_pkg::Axi4R::<32>> #(
+        DepthBits: 11,
+    ) (
+        i_clk  : i_clk,
+        i_rst  : i_rst,
+        i_data : r_enq,
+        o_data : r_deq,
+        o_count: _    ,
+    );
+
+    assign r_enq.valid   = axi.rvalid;
+    assign r_enq.payload = axi.r;
+    assign axi.rready    = r_enq.ready;
+
+    // Output pixel stream (registered)
+    var data_valid    : logic                       ;
+    var data_bits     : logic<video_pkg::PIXEL_BITS>;
+    var end_of_line   : logic                       ;
+    var start_of_frame: logic                       ;
+
+    assign o_data.valid                  = data_valid;
+    assign o_data.payload.pixel_data     = data_bits;
+    assign o_data.payload.end_of_line    = end_of_line;
+    assign o_data.payload.start_of_frame = start_of_frame;
+
+    assign o_command_ready = state == State::s_idle;
+    assign o_busy          = state != State::s_idle;
+
+    let can_input_data: logic = !realign_full && ((data_words_remaining >: '0) || (issued_data_words_remaining >: '0));
+    assign r_deq.ready = (state == State::s_running) && can_input_data;
+
+    always_ff {
+        if_reset {
+            state                       = State::s_idle;
+            command                     = 0 as video_pkg::LineReaderCommand::<AddressBits, MaxWidth>;
+            next_address                = '0;
+            address_words_remaining     = '0;
+            data_words_remaining        = '0;
+            issued_data_words_remaining = '0;
+            pixels_remaining            = '0;
+            realign_input_pointer       = '0;
+            realign_output_pointer      = '0;
+            ar_valid                    = '0;
+            ar_addr                     = '0;
+            ar_len                      = '0;
+            data_valid                  = '0;
+            data_bits                   = '0;
+            end_of_line                 = '0;
+            start_of_frame              = '0;
+        } else {
+            if ar_valid && axi.arready {
+                ar_valid = '0;
+            }
+            if data_valid && o_data.ready {
+                data_valid     = '0;
+                start_of_frame = '0;
+            }
+
+            case state {
+                State::s_idle: {
+                    if i_command_valid && o_command_ready {
+                        command = i_command;
+                        state   = State::s_decode;
+                    }
+                }
+                State::s_decode: {
+                    pixels_remaining = command.count;
+                    start_of_frame   = command.start_of_frame;
+                    // Input pointer starts word aligned; output pointer
+                    // starts at the pixel phase within the first word.
+                    realign_input_pointer       = '0;
+                    realign_output_pointer      = initial_pointer;
+                    address_words_remaining     = words_to_transfer;
+                    data_words_remaining        = '0;
+                    issued_data_words_remaining = '0;
+                    next_address                = start_address_aligned;
+                    state                       = State::s_running;
+                }
+                State::s_running: {
+                    // Generate burst addresses
+                    if (!ar_valid || axi.arready) && (address_words_remaining >: '0)
+                        && (issued_data_words_remaining == '0) {
+                        ar_addr  = next_address;
+                        ar_valid = '1;
+                        if address_words_remaining <: (READ_BURST_WORDS as WORDS_BITS) {
+                            ar_len                      = (address_words_remaining - 1) as 8;
+                            issued_data_words_remaining = address_words_remaining;
+                            address_words_remaining     = '0;
+                        } else {
+                            ar_len                      = (READ_BURST_WORDS - 1) as 8;
+                            issued_data_words_remaining = READ_BURST_WORDS as WORDS_BITS;
+                            address_words_remaining     = address_words_remaining - (READ_BURST_WORDS as WORDS_BITS);
+                        }
+                        next_address = next_address + ((READ_BURST_WORDS * DATA_BYTES) as AddressBits);
+                    }
+                    // Move issued length to the data counter
+                    if (issued_data_words_remaining != '0) && (data_words_remaining == '0) {
+                        issued_data_words_remaining = '0;
+                        data_words_remaining        = issued_data_words_remaining;
+                    }
+                    // Input a bus word into the realignment buffer
+                    if can_input_data && r_deq.valid {
+                        for i in 0..4 {
+                            realign_buffer[in_idx + i] = r_deq.payload.data[8 * i+:8];
+                        }
+                        data_words_remaining  = data_words_remaining - 1;
+                        realign_input_pointer = advance_pointer(realign_input_pointer, 4);
+                    }
+                    // Output a pixel from the realignment buffer
+                    if !realign_empty && (pixels_remaining >: '0) && (!data_valid || o_data.ready) {
+                        data_valid             = '1;
+                        data_bits              = {realign_buffer[out_idx + 1], realign_buffer[out_idx]};
+                        end_of_line            = pixels_remaining == 1;
+                        realign_output_pointer = advance_pointer(realign_output_pointer, 2);
+                        pixels_remaining       = pixels_remaining - 1;
+                    }
+
+                    // Transfer complete?
+                    if (address_words_remaining == '0) && (issued_data_words_remaining == '0)
+                        && (data_words_remaining == '0) && (pixels_remaining == '0) {
+                        state = State::s_idle;
+                    }
+                }
+            }
+        }
+    }
+}

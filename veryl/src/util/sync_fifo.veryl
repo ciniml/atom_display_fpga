@@ -1,0 +1,86 @@
+// sync_fifo.veryl
+// Synchronous FIFO with element count output, first-word-fall-through.
+// The storage is a synchronous-read RAM (write and read both registered)
+// so the synthesizer maps it to a block RAM (GOWIN SDPB) instead of
+// flip-flops; a 1-entry skid register in front of the output restores
+// the FWFT behavior. Total capacity is DEPTH (RAM) + 1 (skid).
+// Veryl port of Chisel's Queue as used in this design
+// (SPISlave receive queue, SDRCBridge channel FIFOs).
+// SPDX-License-Identifier: BSL-1.0
+
+pub module sync_fifo::<T: type> #(
+    param DepthBits: u32 = 5,
+) (
+    i_clk  : input   clock                 ,
+    i_rst  : input   reset                 ,
+    i_data : modport stream_if::<T>::slave ,
+    o_data : modport stream_if::<T>::master,
+    o_count: output  logic<DepthBits + 1>  ,
+) {
+    const DEPTH: u32 = 1 << DepthBits;
+
+    var mem: T [DEPTH];
+    var rp : logic<DepthBits + 1>; // RAM read pointer
+    var wp : logic<DepthBits + 1>; // RAM write pointer
+
+    let mem_empty: logic = rp == wp;
+    let mem_full : logic = (rp[DepthBits] != wp[DepthBits]) && (rp[DepthBits - 1:0] == wp[DepthBits - 1:0]);
+
+    // Output skid register (holds the fall-through word)
+    var out_valid: logic;
+    var out_data : T    ;
+
+    // A word is moved from RAM to the skid register this cycle
+    let load_out: logic = !mem_empty && (!out_valid || o_data.ready);
+
+    // Write port (synchronous)
+    always_ff {
+        if i_data.valid && i_data.ready {
+            mem[wp[DepthBits - 1:0]] = i_data.payload;
+        }
+    }
+
+    // Read port (synchronous): registers RAM output into the skid buffer
+    always_ff {
+        if load_out {
+            out_data = mem[rp[DepthBits - 1:0]];
+        }
+    }
+
+    let do_enq: logic = i_data.valid && ~mem_full;
+    let do_deq: logic = out_valid && o_data.ready;
+
+    // Registered occupancy count. Keeping it out of the combinational
+    // path from wp/rp shortens the critical path into the count's
+    // consumers (e.g. the SDRC bridge burst-issue comparison). It lags
+    // the true occupancy by one cycle, which is always the safe side
+    // for a "enough data buffered" test.
+    var count_q: logic<DepthBits + 1>;
+
+    // Pointers and skid valid
+    always_ff {
+        if_reset {
+            rp        = '0;
+            wp        = '0;
+            out_valid = '0;
+            count_q   = '0;
+        } else {
+            if do_enq {
+                wp += 1;
+            }
+            if do_deq {
+                out_valid = '0;
+            }
+            if load_out {
+                out_valid = '1;
+                rp += 1;
+            }
+            count_q = count_q + (if do_enq ? 1'b1 : 1'b0) - (if do_deq ? 1'b1 : 1'b0);
+        }
+    }
+
+    assign i_data.ready   = ~mem_full;
+    assign o_data.valid   = out_valid;
+    assign o_data.payload = out_data;
+    assign o_count        = count_q;
+}

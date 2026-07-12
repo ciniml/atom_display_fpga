@@ -1,0 +1,50 @@
+// Unit test for video_pkg (video/video_pkg.veryl)
+// SPDX-License-Identifier: BSL-1.0
+
+#[test(test_video_pkg)]
+#[allow(unassign_variable)]
+module test_video_pkg {
+    const CNT_H_BITS: u32 = video_pkg::COUNT_H_BITS;
+    const CNT_V_BITS: u32 = video_pkg::COUNT_V_BITS;
+    const ADDR_BITS : u32 = video_pkg::ADDRESS_BITS;
+
+    var cfg     : video_pkg::VideoConfig                      ;
+    var vsignal : video_pkg::VideoSignal                      ;
+    var video   : video_pkg::VideoIO                          ;
+    var mult_cfg: video_pkg::VideoMultiplicationConfig::<8, 8>;
+
+    initial {
+        // Derived maximums (sizing basis)
+        $assert(CNT_H_BITS == 12);
+        $assert(CNT_V_BITS == 12);
+        $assert(ADDR_BITS == 24);
+
+        // VideoConfig packed width: 9+12+9+9+9+12+10+9 = 79
+        $assert($bits(cfg) == 79);
+        $assert($bits(vsignal) == 18);
+        $assert($bits(video) == 19);
+        $assert($bits(mult_cfg) == 8);
+
+        // 720p default preset
+        cfg     = video_pkg::preset_default();
+        $assert(cfg.back_porch_v == 20);
+        $assert(cfg.pixels_v == 720);
+        $assert(cfg.front_porch_v == 5);
+        $assert(cfg.pulse_width_v == 5);
+        $assert(cfg.back_porch_h == 220);
+        $assert(cfg.pixels_h == 1280);
+        $assert(cfg.front_porch_h == 110);
+        $assert(cfg.pulse_width_h == 40);
+        $assert(video_pkg::total_counts_h(cfg) == 1650);
+        $assert(video_pkg::total_counts_v(cfg) == 750);
+
+        // Xreal Air preset (960x540 on 1080p timing, halved horizontal)
+        cfg     = video_pkg::preset_xreal_air();
+        $assert(cfg.pixels_h == 960);
+        $assert(cfg.pixels_v == 1080);
+        $assert(video_pkg::total_counts_h(cfg) == 1100);
+        $assert(video_pkg::total_counts_v(cfg) == 1125);
+
+        $finish();
+    }
+}

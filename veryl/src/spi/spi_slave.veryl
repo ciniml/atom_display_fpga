@@ -1,0 +1,226 @@
+// spi_slave.veryl
+// SPI slave (mode 0): receives MOSI bytes into a stream with a
+// first-byte-of-transaction marker, and transmits queued send bytes on
+// MISO. Bit handling runs in the SCK posedge/negedge domains with CS as
+// asynchronous reset, exactly like the Chisel original; byte handoff to
+// the main domain uses multi-stage synchronizers with edge detection.
+// Veryl port of fpga_samples spi_slave.scala (SPISlave).
+//
+// spi_slave_core exposes explicit clock/reset ports so the native
+// simulator can drive them ($tb::clock_gen / $tb::reset_gen); the
+// spi_slave wrapper derives them from spi_if for synthesis.
+//
+// NOTE (veryl 0.20 native simulator limitations, see memory notes):
+// - Clock/reset ports are declared before any data port.
+// - i_spi_rst is a plain `reset` (project reset_type = async_high, which
+//   matches CS semantics) so testbenches can bind a reset_gen directly:
+//   cast-connected resets lose their $tb binding.
+// - Only ONE clock/reset cast works per test hierarchy and it must be
+//   bound via `let`, so the testbench casts only the negedge clock.
+// - No #(param) here: parameterized modules with cast-connected
+//   clocks/resets also lose $tb bindings. IdleSendData is a const.
+// SPDX-License-Identifier: BSL-1.0
+
+pub module spi_slave_core (
+    // Clocks and resets (must stay first; see note above)
+    i_clk      : input 'main clock        ,
+    i_rst      : input 'main reset        ,
+    i_spi_clk  : input 'sckp clock        ,
+    i_spi_rst  : input 'sckp reset        ,
+    i_spi_clk_n: input 'sckn clock_negedge,
+    // Main clock domain
+    i_cs     : input   'main logic                                , // CS as data: first-byte detection
+    o_receive: modport 'main stream_if::<spi_pkg::SpiData>::master,
+    i_send   : modport 'main stream_if::<spi_pkg::SpiByte>::slave ,
+    // SPI domains
+    i_mosi: input  'sckp logic,
+    o_miso: output 'sckn logic,
+) {
+    // Idle pattern shifted out on MISO when no send byte is queued
+    // (Chisel: idleSendData parameter; fixed because of the note above).
+    const IDLE_SEND_DATA: logic<8> = 8'hff;
+
+    // ---- SCK posedge domain: receive shift register ----
+    var shift_reg_p : 'sckp logic<8>;
+    var counter_p   : 'sckp logic<8>; // one-hot marching bit counter
+    var valid_rx_spi: 'sckp logic   ;
+    var input_reg   : 'sckp logic<8>;
+
+    // ---- SCK negedge domain: send shift register ----
+    var shift_reg_n : 'sckn logic<8>;
+    var counter_n   : 'sckn logic<8>;
+    var ready_tx_spi: 'sckn logic   ;
+
+    // ---- Main domain ----
+    var valid_rx_sync: 'main logic<4>;
+    var valid_rx     : 'main logic   ;
+    var cs_sync      : 'main logic<3>;
+    var first        : 'main logic   ;
+    var data         : 'main logic<8>;
+    var ready_tx_sync: 'main logic<4>;
+    var ready_tx     : 'main logic   ;
+    var spi_out      : 'main logic<8>;
+
+    let valid_send: 'main logic = i_send.valid;
+
+    unsafe (cdc) {
+        // SCK posedge: sample MOSI, mark byte completion
+        always_ff (i_spi_clk, i_spi_rst) {
+            if_reset {
+                shift_reg_p  = IDLE_SEND_DATA;
+                counter_p    = 8'h80;
+                valid_rx_spi = '0;
+            } else {
+                shift_reg_p = {shift_reg_p[6:0], i_mosi};
+                if counter_p[0] {
+                    valid_rx_spi = '1;
+                } else if counter_p[4] {
+                    valid_rx_spi = '0;
+                }
+                if counter_p[0] {
+                    counter_p = 8'h80;
+                } else {
+                    counter_p >>= 1;
+                }
+            }
+        }
+
+        // Completed byte (no reset, like Chisel Reg)
+        always_ff (i_spi_clk) {
+            if counter_p[0] {
+                input_reg = {shift_reg_p[6:0], i_mosi};
+            }
+        }
+
+        // SCK negedge: shift MISO, request next send byte
+        always_ff (i_spi_clk_n, i_spi_rst) {
+            if_reset {
+                shift_reg_n  = IDLE_SEND_DATA;
+                counter_n    = 8'h80;
+                ready_tx_spi = '0;
+            } else {
+                if counter_n[7] {
+                    shift_reg_n = if valid_send ? spi_out : IDLE_SEND_DATA;
+                } else {
+                    shift_reg_n = {shift_reg_n[6:0], i_mosi};
+                }
+                if counter_n[3] {
+                    ready_tx_spi = '0;
+                } else if counter_n[7] {
+                    ready_tx_spi = valid_send;
+                }
+                if counter_n[0] {
+                    counter_n = 8'h80;
+                } else {
+                    counter_n >>= 1;
+                }
+            }
+        }
+
+        // Main domain: synchronizers and byte capture
+        always_ff (i_clk, i_rst) {
+            if_reset {
+                valid_rx_sync = '0;
+                valid_rx      = '0;
+                cs_sync       = '1;
+                first         = '0;
+                data          = '0;
+                ready_tx_sync = '0;
+                ready_tx      = '0;
+                spi_out       = '0;
+            } else {
+                valid_rx_sync = {valid_rx_spi, valid_rx_sync[3:1]};
+                ready_tx_sync = {ready_tx_spi, ready_tx_sync[3:1]};
+                cs_sync       = {i_cs, cs_sync[2:1]};
+
+                // Receive byte on rising edge of the synced valid
+                valid_rx = '0;
+                if valid_rx_sync[1] && !valid_rx_sync[0] {
+                    data     = input_reg;
+                    valid_rx = '1;
+                }
+
+                // First byte marker: set on CS falling edge, cleared on receive
+                if !cs_sync[1] && cs_sync[0] {
+                    first = '1;
+                } else if valid_rx {
+                    first = '0;
+                }
+
+                // Send handshake: consume on valid, re-arm on synced ready edge
+                if valid_send {
+                    ready_tx = '0;
+                    spi_out  = i_send.payload;
+                }
+                if ready_tx_sync[1] && !ready_tx_sync[0] {
+                    ready_tx = '1;
+                }
+            }
+        }
+    }
+
+    assign o_miso       = shift_reg_n[7];
+    assign i_send.ready = ready_tx;
+
+    // Receive queue (Chisel: Queue(SPIData, 32)) and output register slice
+    var rx_data: 'main spi_pkg::SpiData;
+    always_comb {
+        rx_data.first = first;
+        rx_data.data  = data;
+    }
+
+    inst fifo_in  : stream_if::<spi_pkg::SpiData>;
+    inst fifo_out : stream_if::<spi_pkg::SpiData>;
+    inst slice_out: stream_if::<spi_pkg::SpiData>;
+
+    assign fifo_in.valid   = valid_rx;
+    assign fifo_in.payload = rx_data;
+
+    var fifo_count: 'main logic<6>;
+
+    inst u_fifo: sync_fifo::<spi_pkg::SpiData> #(
+        DepthBits: 5, // 32 entries
+    ) (
+        i_clk  : i_clk     ,
+        i_rst  : i_rst     ,
+        i_data : fifo_in   ,
+        o_data : fifo_out  ,
+        o_count: fifo_count,
+    );
+
+    inst u_slice: irrevocable_reg_slice::<spi_pkg::SpiData> (
+        i_clk : i_clk    ,
+        i_rst : i_rst    ,
+        i_data: fifo_out ,
+        o_data: slice_out,
+    );
+
+    assign o_receive.valid   = slice_out.valid;
+    assign o_receive.payload = slice_out.payload;
+    assign slice_out.ready   = o_receive.ready;
+}
+
+/// Synthesis wrapper: derives the SPI clock/reset from the spi_if pins
+/// (Chisel: io.spi.sck.asClock / io.spi.cs.asAsyncReset).
+pub module spi_slave (
+    i_clk    : input   'main clock                                ,
+    i_rst    : input   'main reset                                ,
+    spi      : modport 'sckp spi_if::device                       ,
+    o_receive: modport 'main stream_if::<spi_pkg::SpiData>::master,
+    i_send   : modport 'main stream_if::<spi_pkg::SpiByte>::slave ,
+) {
+    unsafe (cdc) {
+        inst u_core: spi_slave_core (
+            i_clk      : i_clk                   ,
+            i_rst      : i_rst                   ,
+            i_spi_clk  : spi.sck                 ,
+            i_spi_clk_n: spi.sck as clock_negedge,
+            i_spi_rst  : spi.cs as reset         ,
+            i_cs       : spi.cs                  ,
+            o_receive  : o_receive               ,
+            i_send     : i_send                  ,
+            i_mosi     : spi.mosi                ,
+            o_miso     : spi.miso                ,
+        );
+    }
+}

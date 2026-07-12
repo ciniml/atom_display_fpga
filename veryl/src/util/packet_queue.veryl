@@ -1,0 +1,82 @@
+// packet_queue.veryl
+// Queue that withholds data until a complete packet (delimited by
+// i_last) has been enqueued, or until the queue fills up. Used to
+// buffer whole lines from the stream reader during COPYRECT so the
+// reader and writer never deadlock on the shared memory port.
+// Veryl port of fpga_samples packetqueue.scala (PacketQueue).
+// SPDX-License-Identifier: BSL-1.0
+
+pub module packet_queue::<T: type> #(
+    param DepthBits: u32 = 11,
+) (
+    i_clk  : input  clock,
+    i_rst  : input  reset,
+    i_valid: input  logic,
+    o_ready: output logic,
+    i_data : input  T    ,
+    i_last : input  logic,
+    o_valid: output logic,
+    i_ready: input  logic,
+    o_data : output T    ,
+    o_last : output logic,
+) {
+    const ENTRIES     : u32 = 1 << DepthBits;
+    const COUNTER_BITS: u32 = DepthBits + 1;
+
+    inst q_enq: stream_if::<T>;
+    inst q_deq: stream_if::<T>;
+
+    inst u_queue: sync_fifo::<T> #(
+        DepthBits: DepthBits,
+    ) (
+        i_clk  : i_clk,
+        i_rst  : i_rst,
+        i_data : q_enq,
+        o_data : q_deq,
+        o_count: _    ,
+    );
+
+    var write_counter : logic<COUNTER_BITS>;
+    var read_counter  : logic<COUNTER_BITS>;
+    var is_packet_last: logic              ;
+
+    // Cannot accept the last beat of the next packet while the previous
+    // packet is still being read out.
+    let enqueue_valid: logic = !((read_counter >: '0) && i_last);
+
+    assign o_ready       = enqueue_valid && q_enq.ready;
+    assign q_enq.valid   = enqueue_valid && i_valid;
+    assign q_enq.payload = i_data;
+
+    assign o_valid     = q_deq.valid && (read_counter >: '0);
+    assign q_deq.ready = i_ready && (read_counter >: '0);
+    assign o_data      = q_deq.payload;
+    assign o_last      = (read_counter == 1) && is_packet_last;
+
+    always_ff {
+        if_reset {
+            write_counter  = '0;
+            read_counter   = '0;
+            is_packet_last = '0;
+        } else {
+            if i_valid && o_ready {
+                if i_last {
+                    read_counter   = write_counter + 1;
+                    is_packet_last = '1;
+                    write_counter  = '0;
+                } else {
+                    write_counter += 1;
+                }
+            } else if !q_enq.ready && (write_counter == (ENTRIES as COUNTER_BITS)) {
+                // Queue is full without a "last": release what we have.
+                is_packet_last = '0;
+                read_counter   = write_counter;
+                write_counter  = '0;
+            }
+
+            if o_valid && i_ready {
+                read_counter -= 1;
+            }
+        }
+    }
+}

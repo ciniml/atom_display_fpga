@@ -1,0 +1,64 @@
+// axi4_gate.veryl
+// Gates the AR/AW (address) channels of an AXI4 bus with an enable
+// signal; in-flight R/W/B channels pass through so accepted
+// transactions always complete.
+// Veryl port of fpga_samples axi4_gate.scala (AXI4Gate).
+// SPDX-License-Identifier: BSL-1.0
+
+pub module axi4_gate::<AddressBits: u32, DataBits: u32> (
+    i_clk   : input   clock                                   ,
+    i_rst   : input   reset                                   ,
+    i_enable: input   logic                                   ,
+    i_axi   : modport axi4_if::<AddressBits, DataBits>::slave ,
+    o_axi   : modport axi4_if::<AddressBits, DataBits>::master,
+) {
+    inst ar_in : stream_if::<axi4_pkg::Axi4A::<AddressBits>>;
+    inst ar_out: stream_if::<axi4_pkg::Axi4A::<AddressBits>>;
+    inst aw_in : stream_if::<axi4_pkg::Axi4A::<AddressBits>>;
+    inst aw_out: stream_if::<axi4_pkg::Axi4A::<AddressBits>>;
+
+    inst u_ar_gate: irrevocable_gate::<axi4_pkg::Axi4A::<AddressBits>> (
+        i_clk   : i_clk   ,
+        i_rst   : i_rst   ,
+        i_enable: i_enable,
+        i_data  : ar_in   ,
+        o_data  : ar_out  ,
+    );
+
+    inst u_aw_gate: irrevocable_gate::<axi4_pkg::Axi4A::<AddressBits>> (
+        i_clk   : i_clk   ,
+        i_rst   : i_rst   ,
+        i_enable: i_enable,
+        i_data  : aw_in   ,
+        o_data  : aw_out  ,
+    );
+
+    // AR through gate
+    assign ar_in.valid   = i_axi.arvalid;
+    assign ar_in.payload = i_axi.ar;
+    assign i_axi.arready = ar_in.ready;
+    assign o_axi.arvalid = ar_out.valid;
+    assign o_axi.ar      = ar_out.payload;
+    assign ar_out.ready  = o_axi.arready;
+
+    // AW through gate
+    assign aw_in.valid   = i_axi.awvalid;
+    assign aw_in.payload = i_axi.aw;
+    assign i_axi.awready = aw_in.ready;
+    assign o_axi.awvalid = aw_out.valid;
+    assign o_axi.aw      = aw_out.payload;
+    assign aw_out.ready  = o_axi.awready;
+
+    // R/W/B pass through
+    assign i_axi.rvalid = o_axi.rvalid;
+    assign i_axi.r      = o_axi.r;
+    assign o_axi.rready = i_axi.rready;
+
+    assign o_axi.wvalid = i_axi.wvalid;
+    assign o_axi.w      = i_axi.w;
+    assign i_axi.wready = o_axi.wready;
+
+    assign i_axi.bvalid = o_axi.bvalid;
+    assign i_axi.b      = o_axi.b;
+    assign o_axi.bready = i_axi.bready;
+}

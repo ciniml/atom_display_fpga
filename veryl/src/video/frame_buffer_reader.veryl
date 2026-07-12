@@ -1,0 +1,164 @@
+// frame_buffer_reader.veryl
+// Reads whole frames from the frame buffer line by line on each frame
+// trigger, with X/Y scaling by pixel/line repetition, producing the
+// pixel stream for the video signal generator.
+// Veryl port of fpga_samples framebufferreader.scala (FrameBufferReader).
+// SPDX-License-Identifier: BSL-1.0
+
+pub module frame_buffer_reader::<
+    AddressBits   : u32,
+    MaxWidth      : u32,
+    MaxHeight     : u32,
+    BurstPixels   : u32,
+    MaxBurstLength: u32,
+> (
+    i_clk    : input   clock                                      ,
+    i_rst    : input   reset                                      ,
+    i_trigger: input   logic                                      ,
+    o_active : output  logic                                      ,
+    i_config : input   video_pkg::FrameBufferReaderConfig         ,
+    o_data   : modport stream_if::<video_pkg::VideoSignal>::master,
+    axi      : modport axi4_if::<AddressBits, 32>::read_master    ,
+) {
+    const PIXEL_BYTES      : u32 = video_pkg::PIXEL_BYTES;
+    const LINE_STRIDE_BYTES: u32 = PIXEL_BYTES * MaxWidth;
+    const COUNTER_V_BITS   : u32 = $clog2(MaxHeight);
+    const COUNT_H_BITS     : u32 = $clog2(MaxWidth + 1);
+
+    enum State: logic<3> {
+        s_idle,
+        s_decode,
+        s_decode2,
+        s_running,
+        s_wait_transfer,
+    }
+    var state: State;
+
+    var cfg: video_pkg::FrameBufferReaderConfig;
+
+    // Line reader
+    var reader_command      : video_pkg::LineReaderCommand::<AddressBits, MaxWidth>;
+    var reader_command_valid: logic                                                ;
+    var reader_command_ready: logic                                                ;
+    var reader_busy         : logic                                                ;
+
+    inst reader_data: stream_if::<video_pkg::VideoSignal>;
+
+    inst u_line_reader: line_reader::<AddressBits, MaxWidth, BurstPixels, MaxBurstLength> (
+        i_clk          : i_clk               ,
+        i_rst          : i_rst               ,
+        i_command_valid: reader_command_valid,
+        o_command_ready: reader_command_ready,
+        i_command      : reader_command      ,
+        o_data         : reader_data         ,
+        axi            : axi                 ,
+        o_busy         : reader_busy         ,
+    );
+
+    // Pixel repetition stage (X scaling)
+    var pixel_valid             : logic                    ;
+    var pixel_bits              : video_pkg::VideoSignal   ;
+    var pixel_multiplier_counter: logic                 <4>;
+
+    assign o_data.valid   = pixel_valid;
+    assign o_data.payload = pixel_bits;
+
+    let load_pixel: logic = reader_data.valid && (!pixel_valid || o_data.ready);
+    assign reader_data.ready = load_pixel && (pixel_multiplier_counter == '0);
+
+    // Line repetition stage (Y scaling) and per-frame sequencing
+    var counter_v              : logic<COUNTER_V_BITS>;
+    var line_multiplier_counter: logic<4>             ;
+    var start_address          : logic<AddressBits>   ;
+    var start_address_x        : logic<AddressBits>   ;
+    var start_address_y        : logic<AddressBits>   ;
+    var start_of_frame         : logic                ;
+
+    assign o_active = state != State::s_idle;
+
+    always_ff {
+        if_reset {
+            state                    = State::s_idle;
+            cfg                      = 0 as video_pkg::FrameBufferReaderConfig;
+            reader_command           = 0 as video_pkg::LineReaderCommand::<AddressBits, MaxWidth>;
+            reader_command_valid     = '0;
+            pixel_valid              = '0;
+            pixel_bits               = 0 as video_pkg::VideoSignal;
+            pixel_multiplier_counter = '0;
+            counter_v                = '0;
+            line_multiplier_counter  = '0;
+            start_address            = '0;
+            start_address_x          = '0;
+            start_address_y          = '0;
+            start_of_frame           = '0;
+        } else {
+            // Pixel repetition stage
+            if pixel_valid && o_data.ready {
+                pixel_valid = '0;
+            }
+            if load_pixel {
+                pixel_multiplier_counter  = if pixel_multiplier_counter == '0 ?
+                    (cfg.scale_x - 1) as 4
+                :
+                    pixel_multiplier_counter - 1
+                ;
+                pixel_valid               = '1;
+                pixel_bits.start_of_frame = reader_data.payload.start_of_frame
+                    && (pixel_multiplier_counter == ((cfg.scale_x - 1) as 4));
+                pixel_bits.end_of_line    = reader_data.payload.end_of_line && (pixel_multiplier_counter == '0);
+                pixel_bits.pixel_data     = reader_data.payload.pixel_data;
+            }
+
+            if reader_command_valid && reader_command_ready {
+                reader_command_valid = '0;
+            }
+
+            case state {
+                State::s_idle: {
+                    cfg = i_config;
+                    if i_trigger {
+                        state = State::s_decode;
+                    }
+                }
+                State::s_decode: {
+                    start_of_frame           = '1;
+                    counter_v                = (cfg.pixels_v - 1) as COUNTER_V_BITS;
+                    line_multiplier_counter  = (cfg.scale_y - 1) as 4;
+                    pixel_multiplier_counter = (cfg.scale_x - 1) as 4;
+                    reader_command.count     = cfg.pixels_h as COUNT_H_BITS;
+                    start_address_y          = (cfg.start_y * LINE_STRIDE_BYTES) as AddressBits;
+                    start_address_x          = ({cfg.start_x, 1'b0}) as AddressBits;
+                    state                    = State::s_decode2;
+                }
+                State::s_decode2: {
+                    start_address = start_address_y + start_address_x;
+                    state         = State::s_running;
+                }
+                State::s_running: {
+                    if !reader_command_valid || reader_command_ready {
+                        reader_command_valid          = '1;
+                        reader_command.start_address  = start_address;
+                        reader_command.start_of_frame = start_of_frame;
+                        start_of_frame                = '0;
+                        if line_multiplier_counter == '0 {
+                            line_multiplier_counter = (cfg.scale_y - 1) as 4;
+                            start_address           = start_address + (LINE_STRIDE_BYTES as AddressBits);
+                            if counter_v == '0 {
+                                state = State::s_wait_transfer;
+                            } else {
+                                counter_v -= 1;
+                            }
+                        } else {
+                            line_multiplier_counter -= 1;
+                        }
+                    }
+                }
+                State::s_wait_transfer: {
+                    if !reader_busy {
+                        state = State::s_idle;
+                    }
+                }
+            }
+        }
+    }
+}

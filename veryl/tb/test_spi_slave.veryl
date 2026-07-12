@@ -1,0 +1,147 @@
+// Unit test for spi_slave_core (spi/spi_slave.veryl)
+// The test acts as an SPI mode-0 master: SCK comes from a dedicated
+// clock generator (one .next(1) = one SCK cycle), CS as async reset is
+// emulated with a re-assertable reset generator, and CS-as-data is a
+// separate plain signal.
+// SPDX-License-Identifier: BSL-1.0
+
+#[test(test_spi_slave)]
+#[allow(unassign_variable)]
+module test_spi_slave {
+    inst clk    : $tb::clock_gen;
+    inst rst: $tb::reset_gen (
+        clk: clk,
+    );
+    inst sck    : $tb::clock_gen;
+    inst spi_rst: $tb::reset_gen (
+        clk: sck,
+    );
+
+    let sck_neg: clock_negedge = sck as clock_negedge;
+
+    var cs_data: logic;
+    var mosi   : logic;
+    var miso   : logic;
+
+    inst rx: stream_if::<spi_pkg::SpiData>;
+    inst tx: stream_if::<spi_pkg::SpiByte>;
+
+    inst dut: spi_slave_core (
+        i_clk      : clk    ,
+        i_rst      : rst    ,
+        i_spi_clk  : sck    ,
+        i_spi_clk_n: sck_neg,
+        i_spi_rst  : spi_rst,
+        i_cs       : cs_data,
+        o_receive  : rx     ,
+        i_send     : tx     ,
+        i_mosi     : mosi   ,
+        o_miso     : miso   ,
+    );
+
+    var tx_byte : logic<8>;
+    var miso_cap: logic<8>;
+
+    initial {
+        cs_data    = '1;
+        mosi       = '0;
+        rx.ready   = '0;
+        tx.valid   = '0;
+        tx.payload = '0;
+        rst.assert(clk);
+        clk.next  (2);
+
+        // ---- Transaction 1: master sends 0xa5 then 0x3c ----
+        spi_rst.assert(sck); // CS pulse (async reset of SPI domains)
+        cs_data        = '0; // CS falling edge for the main domain
+        clk.next      (4); // let cs_sync see the edge
+
+        // Send byte 0xa5: MSB first, one sck.next(1) per bit
+        tx_byte = 8'ha5;
+        for b in 0..8 {
+            mosi     = tx_byte[7 - b];
+            sck.next(1);
+            clk.next(2);
+        }
+        clk.next(8); // synchronizer + queue latency
+
+        $assert (rx.valid, "first received byte must be available");
+        $assert (rx.payload.data == 8'ha5, "received byte must be 0xa5");
+        $assert (rx.payload.first == '1, "first flag must be set on 1st byte");
+        rx.ready = '1;
+        clk.next(1);
+        rx.ready = '0;
+
+        // Send byte 0x3c
+        tx_byte = 8'h3c;
+        for b in 0..8 {
+            mosi     = tx_byte[7 - b];
+            sck.next(1);
+            clk.next(2);
+        }
+        clk.next(8);
+
+        $assert (rx.valid, "second received byte must be available");
+        $assert (rx.payload.data == 8'h3c, "received byte must be 0x3c");
+        $assert (rx.payload.first == '0, "first flag must be clear on 2nd byte");
+        rx.ready = '1;
+        clk.next(1);
+        rx.ready = '0;
+
+        // End of transaction 1
+        cs_data  = '1;
+        clk.next(4);
+
+        // ---- Transaction 2: master reads a queued send byte ----
+        tx.valid   = '1;
+        tx.payload = 8'h5a;
+        clk.next  (2);
+
+        spi_rst.assert(sck);
+        cs_data        = '0;
+        clk.next      (4);
+
+        // Clock out one byte; capture MISO after each full SCK cycle
+        // (value shifted at the falling edge = bit the master samples
+        // at the next rising edge).
+        tx_byte  = 8'h00;
+        miso_cap = '0;
+        for b in 0..8 {
+            mosi     = tx_byte[7 - b];
+            sck.next(1);
+            miso_cap = {miso_cap[6:0], miso};
+            clk.next(2);
+            // The send handshake pulses ready once the byte is loaded
+            if tx.valid && tx.ready {
+                tx.valid = '0;
+            }
+        }
+        $display("miso_cap=%h", miso_cap);
+        $assert (miso_cap == 8'h5a, "MISO must shift out the queued send byte");
+        $assert (tx.valid == '0, "send byte must be consumed via ready pulse");
+
+        // The 0x00 sent by the master is still received normally
+        clk.next(8);
+        $assert (rx.valid, "byte received during send must be available");
+        $assert (rx.payload.data == 8'h00);
+        $assert (rx.payload.first == '1, "new transaction sets first again");
+        rx.ready = '1;
+        clk.next(1);
+        rx.ready = '0;
+
+        // ---- With nothing queued, MISO shifts the idle pattern ----
+        miso_cap = '0;
+        for _b in 0..8 {
+            mosi     = '0;
+            sck.next(1);
+            miso_cap = {miso_cap[6:0], miso};
+            clk.next(2);
+        }
+        $assert(miso_cap == 8'hff, "idle send data must be 0xff");
+
+        cs_data  = '1;
+        clk.next(2);
+
+        $finish();
+    }
+}

@@ -1,0 +1,42 @@
+// spi_if.veryl
+// SPI bus interface and received-byte payload type.
+// Veryl port of fpga_samples spi (SPIIO / SPIData).
+// sck is declared as `clock` because Veryl does not allow casting plain
+// logic to a clock type; the emitted SystemVerilog is a plain signal,
+// so top.sv can connect the SCK pin directly.
+// SPDX-License-Identifier: BSL-1.0
+
+pub package spi_pkg {
+    /// Received byte with first-byte-of-transaction marker
+    /// (Chisel: SPIData bundle).
+    struct SpiData {
+        first: logic   ,
+        data : logic<8>,
+    }
+
+    /// Send stream payload (Chisel: UInt(8.W))
+    type SpiByte = logic<8>;
+}
+
+pub interface spi_if {
+    var sck : clock;
+    var mosi: logic;
+    var miso: logic;
+    var cs  : logic;
+
+    /// SPI slave device side (Chisel: Flipped(SPIIO()))
+    modport device {
+        sck : input ,
+        mosi: input ,
+        miso: output,
+        cs  : input ,
+    }
+
+    /// SPI master side
+    modport host {
+        sck : output,
+        mosi: output,
+        miso: input ,
+        cs  : output,
+    }
+}

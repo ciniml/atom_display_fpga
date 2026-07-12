@@ -1,0 +1,305 @@
+// sdrc_bridge.veryl
+// AXI4 (read/write, burst) slave to GOWIN SDRAM controller (SDRC)
+// command bridge. Buffers each channel in FIFOs and only issues an SDRC
+// command when it can run to completion: reads require enough space in
+// the R FIFO for the whole burst, writes require the whole burst in the
+// W FIFO, because the SDRC transfers one word per cycle without
+// backpressure once started.
+// Veryl port of fpga_samples gowin/sdram.scala (SDRCBridge).
+//
+// Generic args cannot take expressions in veryl 0.20, so the byte/bit
+// widths are passed redundantly: DataBits == DataBytes * 8 and
+// AxiAddressBits == SdrcAddressBits + $clog2(DataBytes).
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+pub module sdrc_bridge::<
+    AxiAddressBits : u32,
+    SdrcAddressBits: u32,
+    DataBytes      : u32,
+    DataBits       : u32,
+    MaxBurstLength : u32,
+> (
+    i_clk: input   clock                                                      ,
+    i_rst: input   reset                                                      ,
+    axi  : modport axi4_if::<AxiAddressBits, DataBits>::slave                 ,
+    sdrc : modport sdrc_if::<SdrcAddressBits, DataBytes, MaxBurstLength>::host,
+) {
+    const BYTE_SHIFT      : u32 = $clog2(DataBytes);
+    const DATA_FIFO_BITS  : u32 = $clog2(MaxBurstLength * 2); // >= maxBurstLength*2 entries
+    const VACANCY_BITS    : u32 = $clog2(MaxBurstLength * 2 + 1);
+    const BURST_COUNT_BITS: u32 = $clog2(MaxBurstLength);
+    const DATA_LEN_BITS   : u32 = $clog2(MaxBurstLength + 1);
+
+    // ---- Channel FIFOs (Chisel: Queue(2) / Queue(maxBurstLength*2)) ----
+    inst ar_enq: stream_if::<axi4_pkg::Axi4A::<AxiAddressBits>>;
+    inst ar_mid: stream_if::<axi4_pkg::Axi4A::<AxiAddressBits>>;
+    inst ar_deq: stream_if::<axi4_pkg::Axi4A::<AxiAddressBits>>;
+    inst aw_enq: stream_if::<axi4_pkg::Axi4A::<AxiAddressBits>>;
+    inst aw_mid: stream_if::<axi4_pkg::Axi4A::<AxiAddressBits>>;
+    inst aw_deq: stream_if::<axi4_pkg::Axi4A::<AxiAddressBits>>;
+    inst w_enq : stream_if::<axi4_pkg::Axi4W::<DataBits>>;
+    inst w_deq : stream_if::<axi4_pkg::Axi4W::<DataBits>>;
+    inst r_enq : stream_if::<axi4_pkg::Axi4R::<DataBits>>;
+    inst r_deq : stream_if::<axi4_pkg::Axi4R::<DataBits>>;
+    inst b_enq : stream_if::<axi4_pkg::Axi4B>;
+    inst b_deq : stream_if::<axi4_pkg::Axi4B>;
+
+    var w_count: logic<DATA_FIFO_BITS + 1>;
+    var r_count: logic<DATA_FIFO_BITS + 1>;
+
+    inst u_fifo_ar: sync_fifo::<axi4_pkg::Axi4A::<AxiAddressBits>> #(
+        DepthBits: 1,
+    ) (
+        i_clk  : i_clk ,
+        i_rst  : i_rst ,
+        i_data : ar_enq,
+        o_data : ar_mid,
+        o_count: _     ,
+    );
+    inst u_ar_slice: irrevocable_reg_slice::<axi4_pkg::Axi4A::<AxiAddressBits>> (
+        i_clk : i_clk ,
+        i_rst : i_rst ,
+        i_data: ar_mid,
+        o_data: ar_deq,
+    );
+
+    inst u_fifo_aw: sync_fifo::<axi4_pkg::Axi4A::<AxiAddressBits>> #(
+        DepthBits: 1,
+    ) (
+        i_clk  : i_clk ,
+        i_rst  : i_rst ,
+        i_data : aw_enq,
+        o_data : aw_mid,
+        o_count: _     ,
+    );
+    inst u_aw_slice: irrevocable_reg_slice::<axi4_pkg::Axi4A::<AxiAddressBits>> (
+        i_clk : i_clk ,
+        i_rst : i_rst ,
+        i_data: aw_mid,
+        o_data: aw_deq,
+    );
+
+    inst u_fifo_w: sync_fifo::<axi4_pkg::Axi4W::<DataBits>> #(
+        DepthBits: DATA_FIFO_BITS,
+    ) (
+        i_clk  : i_clk  ,
+        i_rst  : i_rst  ,
+        i_data : w_enq  ,
+        o_data : w_deq  ,
+        o_count: w_count,
+    );
+
+    inst u_fifo_r: sync_fifo::<axi4_pkg::Axi4R::<DataBits>> #(
+        DepthBits: DATA_FIFO_BITS,
+    ) (
+        i_clk  : i_clk  ,
+        i_rst  : i_rst  ,
+        i_data : r_enq  ,
+        o_data : r_deq  ,
+        o_count: r_count,
+    );
+
+    inst u_fifo_b: sync_fifo::<axi4_pkg::Axi4B> #(
+        DepthBits: 1,
+    ) (
+        i_clk  : i_clk,
+        i_rst  : i_rst,
+        i_data : b_enq,
+        o_data : b_deq,
+        o_count: _    ,
+    );
+
+    // AXI side wiring
+    assign ar_enq.valid   = axi.arvalid;
+    assign ar_enq.payload = axi.ar;
+    assign axi.arready    = ar_enq.ready;
+    assign aw_enq.valid   = axi.awvalid;
+    assign aw_enq.payload = axi.aw;
+    assign axi.awready    = aw_enq.ready;
+    assign w_enq.valid    = axi.wvalid;
+    assign w_enq.payload  = axi.w;
+    assign axi.wready     = w_enq.ready;
+    assign axi.rvalid     = r_deq.valid;
+    assign axi.r          = r_deq.payload;
+    assign r_deq.ready    = axi.rready;
+    assign axi.bvalid     = b_deq.valid;
+    assign axi.b          = b_deq.payload;
+    assign b_deq.ready    = axi.bready;
+
+    // ---- SDRC command state machine ----
+    enum State: logic<3> {
+        s_reset,
+        s_wait_reset,
+        s_idle,
+        s_read,
+        s_begin_write,
+        s_write,
+    }
+
+    var state: State;
+
+    var sdrc_busy_delay: logic<4>;
+    let sdrc_busy      : logic    = !sdrc.busy_n || sdrc_busy_delay[0];
+
+    var rd_n             : logic                                        ;
+    var wr_n             : logic                                        ;
+    var wdata            : logic                      <DataBits>        ;
+    var dqm              : logic                      <DataBytes>       ;
+    var address          : logic                      <SdrcAddressBits> ;
+    var data_len         : logic                      <DATA_LEN_BITS>   ;
+    var read_burst_count : logic                      <BURST_COUNT_BITS>;
+    var write_burst_count: logic                      <BURST_COUNT_BITS>;
+    var rvalid           : logic                                        ;
+    var rsignal          : axi4_pkg::Axi4R::<DataBits>                  ;
+    var bvalid           : logic                                        ;
+    var bsignal          : axi4_pkg::Axi4B                              ;
+
+    // Vacancy accounting, registered to relax timing (Chisel comment).
+    // Note the R FIFO capacity used for accounting is maxBurstLength*2
+    // even though the physical FIFO is the next power of two.
+    var read_fifo_vacancy         : logic<VACANCY_BITS>;
+    var read_fifo_vacancy_required: logic<VACANCY_BITS>;
+
+    var ar_ready: logic;
+    var aw_ready: logic;
+    var w_ready : logic;
+
+    const W_COUNT_BITS: u32                 = DATA_FIFO_BITS + 1;
+    let   aw_len_ext  : logic<W_COUNT_BITS> = aw_deq.payload.len as W_COUNT_BITS;
+
+    always_comb {
+        ar_ready = '0;
+        aw_ready = '0;
+        w_ready  = '0;
+        if state == State::s_idle {
+            // Start READ if the R FIFO can hold the whole burst.
+            ar_ready = !sdrc_busy && (read_fifo_vacancy >: read_fifo_vacancy_required);
+            // Start WRITE if the whole burst is already in the W FIFO,
+            // no read wants to start, and the B FIFO has space.
+            aw_ready = !sdrc_busy && aw_deq.valid && w_deq.valid && (w_count >: aw_len_ext) && !ar_ready && b_enq.ready;
+        } else if state == State::s_begin_write || state == State::s_write {
+            w_ready = '1;
+        }
+    }
+
+    assign ar_deq.ready = ar_ready;
+    assign aw_deq.ready = aw_ready;
+    assign w_deq.ready  = w_ready;
+
+    assign r_enq.valid   = rvalid;
+    assign r_enq.payload = rsignal;
+    assign b_enq.valid   = bvalid;
+    assign b_enq.payload = bsignal;
+
+    let ar_word_addr: logic<SdrcAddressBits> = (ar_deq.payload.addr >> BYTE_SHIFT) as SdrcAddressBits;
+    let aw_word_addr: logic<SdrcAddressBits> = (aw_deq.payload.addr >> BYTE_SHIFT) as SdrcAddressBits;
+
+    always_ff {
+        if_reset {
+            state                      = State::s_reset;
+            sdrc_busy_delay            = '0;
+            rd_n                       = '1;
+            wr_n                       = '1;
+            wdata                      = '0;
+            dqm                        = '0;
+            address                    = '0;
+            data_len                   = '0;
+            read_burst_count           = '0;
+            write_burst_count          = '0;
+            rvalid                     = '0;
+            rsignal                    = 0 as axi4_pkg::Axi4R::<DataBits>;
+            bvalid                     = '0;
+            bsignal                    = 0 as axi4_pkg::Axi4B;
+            read_fifo_vacancy          = '0;
+            read_fifo_vacancy_required = (MaxBurstLength * 2) as VACANCY_BITS;
+        } else {
+            sdrc_busy_delay = sdrc_busy_delay >> 1;
+
+            read_fifo_vacancy          = ((MaxBurstLength * 2) as VACANCY_BITS) - (r_count as VACANCY_BITS);
+            read_fifo_vacancy_required = if ar_deq.valid ?
+                (ar_deq.payload.len as VACANCY_BITS) + 1
+            :
+                (MaxBurstLength * 2) as VACANCY_BITS
+            ;
+
+            rd_n   = '1;
+            wr_n   = '1;
+            bvalid = '0;
+            rvalid = '0;
+
+            case state {
+                State::s_reset: {
+                    state = State::s_wait_reset;
+                }
+                State::s_wait_reset: {
+                    if sdrc.init_done {
+                        state = State::s_idle;
+                    }
+                }
+                State::s_idle: {
+                    if ar_ready {
+                        address          = ar_word_addr;
+                        data_len         = ar_deq.payload.len as DATA_LEN_BITS;
+                        read_burst_count = ar_deq.payload.len as BURST_COUNT_BITS;
+                        rd_n             = '0;
+                        sdrc_busy_delay  = '1;
+                        state            = State::s_read;
+                    } else if aw_ready {
+                        address           = aw_word_addr;
+                        data_len          = aw_deq.payload.len as DATA_LEN_BITS;
+                        write_burst_count = aw_deq.payload.len as BURST_COUNT_BITS;
+                        state             = State::s_begin_write;
+                    }
+                }
+                State::s_read: {
+                    if sdrc.rd_valid {
+                        rvalid       = '1;
+                        rsignal.data = sdrc.data_read;
+                        rsignal.resp = axi4_pkg::Axi4Resp::okay;
+                        rsignal.last = read_burst_count == '0;
+                        if read_burst_count == '0 {
+                            state = State::s_idle;
+                        } else {
+                            read_burst_count -= 1;
+                        }
+                    }
+                }
+                State::s_begin_write: {
+                    wr_n            = '0;
+                    wdata           = w_deq.payload.data;
+                    dqm             = ~w_deq.payload.strb;
+                    sdrc_busy_delay = '1;
+                    if write_burst_count == '0 {
+                        // Single beat: B FIFO space was already checked in aw_ready.
+                        bvalid       = '1;
+                        bsignal.resp = axi4_pkg::Axi4Resp::okay;
+                        state        = State::s_idle;
+                    } else {
+                        write_burst_count -= 1;
+                        state             =  State::s_write;
+                    }
+                }
+                State::s_write: {
+                    wdata = w_deq.payload.data;
+                    dqm   = ~w_deq.payload.strb;
+                    if write_burst_count == '0 {
+                        bvalid       = '1;
+                        bsignal.resp = axi4_pkg::Axi4Resp::okay;
+                        state        = State::s_idle;
+                    } else {
+                        write_burst_count -= 1;
+                    }
+                }
+            }
+        }
+    }
+
+    assign sdrc.rd_n         = rd_n;
+    assign sdrc.wr_n         = wr_n;
+    assign sdrc.addr         = address;
+    assign sdrc.data_len     = data_len;
+    assign sdrc.data_write   = wdata;
+    assign sdrc.dqm          = dqm;
+    assign sdrc.self_refresh = '0;
+    assign sdrc.power_down   = '0;
+}

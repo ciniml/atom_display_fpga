@@ -1,0 +1,253 @@
+// video_pkg.veryl
+// Video timing parameters and related types.
+// Veryl port of fpga_samples video.scala (VideoParams / VideoConfig /
+// VideoSignal / VideoIO / VideoMultiplicationConfig) and
+// atom_display PresetVideoParams.
+//
+// Note: the Chisel original parameterizes these types by VideoParams.
+// The actual design always sizes runtime structs by PresetVideoParams.Maximum
+// with 16bpp pixels, so this port fixes the sizing constants here instead of
+// using generic packages (which the Veryl 0.20 native test simulator cannot
+// elaborate yet). Per-module timing parameters remain module `param`s.
+// SPDX-License-Identifier: BSL-1.0
+
+pub package video_pkg {
+    // Pixel format (Chisel: PresetVideoParams.pixelBits)
+    const PIXEL_BITS : u32 = 16;
+    const PIXEL_BYTES: u32 = (PIXEL_BITS + 7) / 8;
+
+    // Maximum counter sizes (Chisel: PresetVideoParams.Maximum)
+    const MAX_BACK_PORCH_V : u32 = 511;
+    const MAX_PIXELS_V     : u32 = 2048;
+    const MAX_FRONT_PORCH_V: u32 = 511;
+    const MAX_PULSE_WIDTH_V: u32 = 511;
+    const MAX_BACK_PORCH_H : u32 = 511;
+    const MAX_PIXELS_H     : u32 = 2048;
+    const MAX_FRONT_PORCH_H: u32 = 1023;
+    const MAX_PULSE_WIDTH_H: u32 = 511;
+
+    // Derived maximums (Chisel: VideoParams derived vals for Maximum)
+    const MAX_TOTAL_COUNTS_H: u32 = MAX_BACK_PORCH_H + MAX_PIXELS_H + MAX_FRONT_PORCH_H + MAX_PULSE_WIDTH_H;
+    const MAX_TOTAL_COUNTS_V: u32 = MAX_BACK_PORCH_V + MAX_PIXELS_V + MAX_FRONT_PORCH_V + MAX_PULSE_WIDTH_V;
+    const COUNT_H_BITS      : u32 = $clog2(MAX_TOTAL_COUNTS_H + 1);
+    const COUNT_V_BITS      : u32 = $clog2(MAX_TOTAL_COUNTS_V + 1);
+    const MAX_FRAME_PIXELS  : u32 = MAX_PIXELS_H * MAX_PIXELS_V;
+    const MAX_FRAME_BYTES   : u32 = PIXEL_BYTES * MAX_FRAME_PIXELS;
+    const ADDRESS_BITS      : u32 = $clog2(MAX_FRAME_BYTES * 2);
+
+    // Field widths of VideoConfig (sized by the Maximum parameters)
+    const BACK_PORCH_V_BITS : u32 = $clog2(MAX_BACK_PORCH_V + 1);
+    const PIXELS_V_BITS     : u32 = $clog2(MAX_PIXELS_V + 1);
+    const FRONT_PORCH_V_BITS: u32 = $clog2(MAX_FRONT_PORCH_V + 1);
+    const PULSE_WIDTH_V_BITS: u32 = $clog2(MAX_PULSE_WIDTH_V + 1);
+    const BACK_PORCH_H_BITS : u32 = $clog2(MAX_BACK_PORCH_H + 1);
+    const PIXELS_H_BITS     : u32 = $clog2(MAX_PIXELS_H + 1);
+    const FRONT_PORCH_H_BITS: u32 = $clog2(MAX_FRONT_PORCH_H + 1);
+    const PULSE_WIDTH_H_BITS: u32 = $clog2(MAX_PULSE_WIDTH_H + 1);
+
+    /// Runtime-reconfigurable video timing (Chisel: VideoConfig bundle).
+    struct VideoConfig {
+        back_porch_v : logic<BACK_PORCH_V_BITS> ,
+        pixels_v     : logic<PIXELS_V_BITS>     ,
+        front_porch_v: logic<FRONT_PORCH_V_BITS>,
+        pulse_width_v: logic<PULSE_WIDTH_V_BITS>,
+        back_porch_h : logic<BACK_PORCH_H_BITS> ,
+        pixels_h     : logic<PIXELS_H_BITS>     ,
+        front_porch_h: logic<FRONT_PORCH_H_BITS>,
+        pulse_width_h: logic<PULSE_WIDTH_H_BITS>,
+    }
+
+    /// Native pixel type (16bpp RGB565)
+    type PixelType = logic<PIXEL_BITS>;
+
+    /// Pixel stream payload (Chisel: VideoSignal bundle).
+    struct VideoSignal {
+        pixel_data    : logic<PIXEL_BITS>,
+        start_of_frame: logic            ,
+        end_of_line   : logic            ,
+    }
+
+    /// Raw video output signals (Chisel: VideoIO bundle).
+    struct VideoIO {
+        pixel_data : logic<PIXEL_BITS>,
+        h_sync     : logic            ,
+        v_sync     : logic            ,
+        data_enable: logic            ,
+    }
+
+    /// Video scaling multiplier configuration
+    /// (Chisel: VideoMultiplicationConfig bundle).
+    struct VideoMultiplicationConfig::<MaxMultiplierH: u32, MaxMultiplierV: u32> {
+        multiplier_h: logic<$clog2(MaxMultiplierH + 1)>,
+        multiplier_v: logic<$clog2(MaxMultiplierV + 1)>,
+    }
+
+    /// Line transfer commands and frame buffer reader configuration
+    /// (Chisel: LineReaderCommand / LineWriterCommand /
+    /// StreamReaderCommand / StreamWriterCommand / FrameBufferReaderConfig).
+    /// Widths derive from the generic max geometry; pixel format is
+    /// fixed to PIXEL_BITS like the rest of this package.
+    struct LineReaderCommand::<AddressBits: u32, MaxWidth: u32> {
+        start_address : logic<AddressBits>         ,
+        count         : logic<$clog2(MaxWidth + 1)>,
+        start_of_frame: logic                      ,
+    }
+
+    struct LineWriterCommand::<AddressBits: u32, MaxWidth: u32> {
+        start_address: logic<AddressBits>         ,
+        count        : logic<$clog2(MaxWidth + 1)>,
+        do_fill      : logic                      ,
+        color        : logic<PIXEL_BITS>          ,
+    }
+
+    struct StreamReaderCommand::<AddressBits: u32, MaxWidth: u32, MaxHeight: u32> {
+        address_offset : logic<AddressBits>          ,
+        start_x        : logic<$clog2(MaxWidth + 1)> ,
+        end_x_inclusive: logic<$clog2(MaxWidth + 1)> ,
+        start_y        : logic<$clog2(MaxHeight + 1)>,
+        end_y_inclusive: logic<$clog2(MaxHeight + 1)>,
+    }
+
+    struct StreamWriterCommand::<AddressBits: u32, MaxWidth: u32, MaxHeight: u32> {
+        address_offset : logic<AddressBits>          ,
+        start_x        : logic<$clog2(MaxWidth + 1)> ,
+        end_x_inclusive: logic<$clog2(MaxWidth + 1)> ,
+        start_y        : logic<$clog2(MaxHeight + 1)>,
+        end_y_inclusive: logic<$clog2(MaxHeight + 1)>,
+        do_fill        : logic                       ,
+        color          : logic<PIXEL_BITS>           ,
+    }
+
+    // FrameBufferReaderConfig, sized by the Maximum geometry
+    // (Chisel: maxScale = 16 on the CommandProcessor side).
+    const SCALE_BITS  : u32 = $clog2(16 + 1);
+    const START_X_BITS: u32 = $clog2(MAX_PIXELS_H);
+    const START_Y_BITS: u32 = $clog2(MAX_PIXELS_V);
+
+    struct FrameBufferReaderConfig {
+        scale_x : logic<SCALE_BITS>   ,
+        scale_y : logic<SCALE_BITS>   ,
+        start_x : logic<START_X_BITS> ,
+        start_y : logic<START_Y_BITS> ,
+        pixels_h: logic<PIXELS_H_BITS>,
+        pixels_v: logic<PIXELS_V_BITS>,
+    }
+
+    /// Build a VideoConfig value from raw timing numbers
+    /// (Chisel: videoConfigType.default(videoParams)).
+    function config_value (
+        back_porch_v : input u32,
+        pixels_v     : input u32,
+        front_porch_v: input u32,
+        pulse_width_v: input u32,
+        back_porch_h : input u32,
+        pixels_h     : input u32,
+        front_porch_h: input u32,
+        pulse_width_h: input u32,
+    ) -> VideoConfig {
+        var cfg              : VideoConfig;
+        cfg.back_porch_v  = back_porch_v[BACK_PORCH_V_BITS - 1:0];
+        cfg.pixels_v      = pixels_v[PIXELS_V_BITS - 1:0];
+        cfg.front_porch_v = front_porch_v[FRONT_PORCH_V_BITS - 1:0];
+        cfg.pulse_width_v = pulse_width_v[PULSE_WIDTH_V_BITS - 1:0];
+        cfg.back_porch_h  = back_porch_h[BACK_PORCH_H_BITS - 1:0];
+        cfg.pixels_h      = pixels_h[PIXELS_H_BITS - 1:0];
+        cfg.front_porch_h = front_porch_h[FRONT_PORCH_H_BITS - 1:0];
+        cfg.pulse_width_h = pulse_width_h[PULSE_WIDTH_H_BITS - 1:0];
+        return cfg;
+    }
+
+    /// Total horizontal counts of a runtime config (Chisel: VideoConfig.totalCountsH).
+    function total_counts_h (
+        cfg: input VideoConfig,
+    ) -> logic<COUNT_H_BITS> {
+        var total: logic<COUNT_H_BITS>;
+        total =  0;
+        total += {1'b0 repeat COUNT_H_BITS - PULSE_WIDTH_H_BITS, cfg.pulse_width_h};
+        total += {1'b0 repeat COUNT_H_BITS - BACK_PORCH_H_BITS, cfg.back_porch_h};
+        total += {1'b0 repeat COUNT_H_BITS - PIXELS_H_BITS, cfg.pixels_h};
+        total += {1'b0 repeat COUNT_H_BITS - FRONT_PORCH_H_BITS, cfg.front_porch_h};
+        return total;
+    }
+
+    /// Total vertical counts of a runtime config (Chisel: VideoConfig.totalCountsV).
+    function total_counts_v (
+        cfg: input VideoConfig,
+    ) -> logic<COUNT_V_BITS> {
+        var total: logic<COUNT_V_BITS>;
+        total =  0;
+        total += {1'b0 repeat COUNT_V_BITS - PULSE_WIDTH_V_BITS, cfg.pulse_width_v};
+        total += {1'b0 repeat COUNT_V_BITS - BACK_PORCH_V_BITS, cfg.back_porch_v};
+        total += {1'b0 repeat COUNT_V_BITS - PIXELS_V_BITS, cfg.pixels_v};
+        total += {1'b0 repeat COUNT_V_BITS - FRONT_PORCH_V_BITS, cfg.front_porch_v};
+        return total;
+    }
+
+    // Presets (Chisel: PresetVideoParams) as runtime VideoConfig values.
+    // Argument order: bpV, pxV, fpV, pwV, bpH, pxH, fpH, pwH
+
+    /// Default_1280_720_60
+    function preset_720p () -> VideoConfig {
+        return config_value(20, 720, 5, 5, 220, 1280, 110, 40);
+    }
+    /// Default_1920_1080_30
+    function preset_1080p30 () -> VideoConfig {
+        return config_value(36, 1080, 4, 5, 148, 1920, 88, 44);
+    }
+    /// Default_1920_1080_24
+    function preset_1080p24 () -> VideoConfig {
+        return config_value(36, 1080, 4, 5, 148, 1920, 638, 44);
+    }
+    /// Generic_1024_768_60
+    function preset_1024x768 () -> VideoConfig {
+        return config_value(63, 768, 64, 5, 117, 1024, 117, 117);
+    }
+    /// TwiHai_480_1920_60
+    function preset_480x1920 () -> VideoConfig {
+        return config_value(20, 1920, 10, 5, 51, 480, 51, 51);
+    }
+    /// Circular_480_480_60
+    function preset_480x480 () -> VideoConfig {
+        return config_value(135, 480, 130, 5, 390, 480, 390, 390);
+    }
+    /// LowPixelClock_640_480_60_CVT
+    function preset_640x480_cvt () -> VideoConfig {
+        return config_value(13, 480, 3, 4, 80, 640, 16, 64);
+    }
+    /// LowPixelClock_640_480_60_CEA_861
+    function preset_640x480_cea () -> VideoConfig {
+        return config_value(33, 480, 10, 2, 48, 640, 16, 96);
+    }
+    /// LowPixelClock_ARGlass_640_400_59p94
+    function preset_arglass_640x400 () -> VideoConfig {
+        return config_value(32, 400, 87, 6, 58, 640, 96, 64);
+    }
+    /// XrealAir_960_540_60
+    function preset_xreal_air () -> VideoConfig {
+        return config_value(36, 1080, 4, 5, 74, 960, 44, 22);
+    }
+
+    // Design default resolution (Chisel: defaultVideoParams = Default_1280_720_60).
+    // Also exposed as raw constants for module parameters.
+    const DEFAULT_BACK_PORCH_V : u32 = 20;
+    const DEFAULT_PIXELS_V     : u32 = 720;
+    const DEFAULT_FRONT_PORCH_V: u32 = 5;
+    const DEFAULT_PULSE_WIDTH_V: u32 = 5;
+    const DEFAULT_BACK_PORCH_H : u32 = 220;
+    const DEFAULT_PIXELS_H     : u32 = 1280;
+    const DEFAULT_FRONT_PORCH_H: u32 = 110;
+    const DEFAULT_PULSE_WIDTH_H: u32 = 40;
+
+    function preset_default () -> VideoConfig {
+        return config_value(
+            DEFAULT_BACK_PORCH_V,
+            DEFAULT_PIXELS_V,
+            DEFAULT_FRONT_PORCH_V,
+            DEFAULT_PULSE_WIDTH_V,
+            DEFAULT_BACK_PORCH_H,
+            DEFAULT_PIXELS_H,
+            DEFAULT_FRONT_PORCH_H,
+            DEFAULT_PULSE_WIDTH_H,
+        );
+    }
+}
