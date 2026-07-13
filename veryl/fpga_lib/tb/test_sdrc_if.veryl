@@ -1,5 +1,5 @@
 // Unit test for sdrc_if (sdram/sdrc_if.veryl)
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: BSL-1.0
 
 #[test(test_sdrc_if)]
 #[allow(unassign_variable)]

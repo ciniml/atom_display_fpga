@@ -2,7 +2,7 @@
 // tb_sim_sdrc SDRAM controller model: burst writes and reads through
 // the full AXI -> SDRC -> memory path, including the SDRC's read
 // latency and delayed busy_n behavior.
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: BSL-1.0
 
 #[test(test_sdrc_bridge)]
 #[allow(unassign_variable)]

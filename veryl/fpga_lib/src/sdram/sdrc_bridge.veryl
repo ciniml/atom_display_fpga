@@ -10,7 +10,7 @@
 // Generic args cannot take expressions in veryl 0.20, so the byte/bit
 // widths are passed redundantly: DataBits == DataBytes * 8 and
 // AxiAddressBits == SdrcAddressBits + $clog2(DataBytes).
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: BSL-1.0
 
 pub module sdrc_bridge::<
     AxiAddressBits : u32,

@@ -10,14 +10,14 @@ pub module m5stack_hdmi_flat (
     i_clk: input 'main clock,
     i_rst: input 'main reset,
     // Video clock domain
-    io_videoClock: input  'video clock    ,
-    io_videoReset: input  'video reset    ,
+    io_videoClock      : input  'video clock    ,
+    io_videoReset      : input  'video reset    ,
     io_video_pixelData : output 'video logic<16>,
     io_video_hSync     : output 'video logic    ,
     io_video_vSync     : output 'video logic    ,
     io_video_dataEnable: output 'video logic    ,
     io_dataInSync      : output 'video logic    ,
-    // SPI bus (SCK/CS domains derived inside spi_slave)
+    // SPI bus (SCK/CS domains derived inside fpga_lib::spi_slave)
     io_spi_sck : input  'sckp clock,
     io_spi_mosi: input  'sckp logic,
     io_spi_miso: output 'sckp logic,
@@ -37,21 +37,21 @@ pub module m5stack_hdmi_flat (
     io_sdrc_rdValid    : input  'main logic    ,
     io_sdrc_wrdAck     : input  'main logic    ,
     // Status and video clock PLL reconfiguration (main domain)
-    io_trigger        : output 'main logic,
-    io_processorIsBusy: output 'main logic,
+    io_trigger                         : output 'main logic    ,
+    io_processorIsBusy                 : output 'main logic    ,
     io_videoClockConfig_inputDivider   : output 'main logic<16>,
     io_videoClockConfig_outputDivider  : output 'main logic<16>,
     io_videoClockConfig_feedbackDivider: output 'main logic<16>,
     io_videoClockConfig_useHalfClock   : output 'main logic    ,
     io_videoClockConfigValid           : output 'main logic    ,
 ) {
-    inst spi : spi_if;
-    inst sdrc: sdrc_if::<22, 4, 80>;
+    inst spi : fpga_lib::spi_if;
+    inst sdrc: fpga_lib::sdrc_if::<22, 4, 80>;
 
-    var video_out: 'video video_pkg::VideoIO;
-    var vclk_cfg: 'main command_pkg::VideoClockConfig;
+    var video_out: 'video fpga_lib::video_pkg::VideoIO           ;
+    var vclk_cfg : 'main  command_pkg::VideoClockConfig;
 
-    // SPI pins <-> spi_if
+    // SPI pins <-> fpga_lib::spi_if
     assign spi.sck     = io_spi_sck;
     assign spi.mosi    = io_spi_mosi;
     assign spi.cs      = io_spi_cs;

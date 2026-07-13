@@ -20,25 +20,25 @@ pub module command_processor::<AddressBits: u32, MaxWidth: u32, MaxHeight: u32> 
     i_clk: input clock,
     i_rst: input reset,
     // SPI byte streams
-    i_data   : modport stream_if::<spi_pkg::SpiData>::slave ,
-    o_result : modport stream_if::<spi_pkg::SpiByte>::master,
+    i_data   : modport fpga_lib::stream_if::<fpga_lib::spi_pkg::SpiData>::slave ,
+    o_result : modport fpga_lib::stream_if::<fpga_lib::spi_pkg::SpiByte>::master,
     o_is_busy: output  logic                                ,
     // Stream reader (COPYRECT source)
     o_reader_command_valid: output  logic                                                             ,
     i_reader_command_ready: input   logic                                                             ,
-    o_reader_command      : output  video_pkg::StreamReaderCommand::<AddressBits, MaxWidth, MaxHeight>,
-    i_reader_data         : modport stream_if::<video_pkg::VideoSignal>::slave                        ,
+    o_reader_command      : output  fpga_lib::video_pkg::StreamReaderCommand::<AddressBits, MaxWidth, MaxHeight>,
+    i_reader_data         : modport fpga_lib::stream_if::<fpga_lib::video_pkg::VideoSignal>::slave                        ,
     i_reader_is_busy      : input   logic                                                             ,
     // Stream writer
     o_writer_command_valid: output  logic                                                             ,
     i_writer_command_ready: input   logic                                                             ,
-    o_writer_command      : output  video_pkg::StreamWriterCommand::<AddressBits, MaxWidth, MaxHeight>,
-    o_writer_data         : modport stream_if::<video_pkg::VideoSignal>::master                       ,
+    o_writer_command      : output  fpga_lib::video_pkg::StreamWriterCommand::<AddressBits, MaxWidth, MaxHeight>,
+    o_writer_data         : modport fpga_lib::stream_if::<fpga_lib::video_pkg::VideoSignal>::master                       ,
     i_writer_is_busy      : input   logic                                                             ,
     // Configuration outputs
-    o_frame_buffer_config     : output video_pkg::FrameBufferReaderConfig,
+    o_frame_buffer_config     : output fpga_lib::video_pkg::FrameBufferReaderConfig,
     o_video_config_valid      : output logic                             ,
-    o_video_config            : output video_pkg::VideoConfig            ,
+    o_video_config            : output fpga_lib::video_pkg::VideoConfig            ,
     o_video_clock_config_valid: output logic                             ,
     o_video_clock_config      : output command_pkg::VideoClockConfig     ,
     o_dbg_copy_rect           : output logic                             ,
@@ -50,8 +50,8 @@ pub module command_processor::<AddressBits: u32, MaxWidth: u32, MaxHeight: u32> 
     const WH_BITS     : u32 = COUNT_H_BITS + 1;
 
     // ---- SPI input demux: 0 = command, 1..3 = pixel data (332/565/888) ----
-    inst spi_in       : stream_if::<spi_pkg::SpiData>;
-    inst spi_demux_out: stream_if::<spi_pkg::SpiData> [4];
+    inst spi_in       : fpga_lib::stream_if::<fpga_lib::spi_pkg::SpiData>;
+    inst spi_demux_out: fpga_lib::stream_if::<fpga_lib::spi_pkg::SpiData> [4];
 
     var spi_select: logic<3>;
 
@@ -61,7 +61,7 @@ pub module command_processor::<AddressBits: u32, MaxWidth: u32, MaxHeight: u32> 
 
     let spi_in_fire: logic = spi_in.valid && spi_in.ready;
 
-    inst u_spi_demux: irrevocable_unsafe_demux::<spi_pkg::SpiData> #(
+    inst u_spi_demux: fpga_lib::irrevocable_unsafe_demux::<fpga_lib::spi_pkg::SpiData> #(
         N: 4,
     ) (
         i_data  : spi_in       ,
@@ -70,12 +70,12 @@ pub module command_processor::<AddressBits: u32, MaxWidth: u32, MaxHeight: u32> 
     );
 
     // ---- Pixel data mux: 0 = RGB332, 1 = RGB565, 2 = RGB888, 3 = frame buffer reader ----
-    inst pixel_mux_in : stream_if::<video_pkg::PixelType> [4];
-    inst pixel_mux_out: stream_if::<video_pkg::PixelType>;
+    inst pixel_mux_in : fpga_lib::stream_if::<fpga_lib::video_pkg::PixelType> [4];
+    inst pixel_mux_out: fpga_lib::stream_if::<fpga_lib::video_pkg::PixelType>;
 
     var pixel_data_select: logic<3>;
 
-    inst u_pixel_mux: irrevocable_unsafe_mux::<video_pkg::PixelType> #(
+    inst u_pixel_mux: fpga_lib::irrevocable_unsafe_mux::<fpga_lib::video_pkg::PixelType> #(
         N: 4,
     ) (
         i_data  : pixel_mux_in     ,
@@ -85,9 +85,9 @@ pub module command_processor::<AddressBits: u32, MaxWidth: u32, MaxHeight: u32> 
 
     // Whole-payload copies: the native simulator does not support struct
     // member access through interface-array elements.
-    var d1_payload: spi_pkg::SpiData;
-    var d2_payload: spi_pkg::SpiData;
-    var d3_payload: spi_pkg::SpiData;
+    var d1_payload: fpga_lib::spi_pkg::SpiData;
+    var d2_payload: fpga_lib::spi_pkg::SpiData;
+    var d3_payload: fpga_lib::spi_pkg::SpiData;
     assign d1_payload = spi_demux_out[1].payload;
     assign d2_payload = spi_demux_out[2].payload;
     assign d3_payload = spi_demux_out[3].payload;
@@ -103,7 +103,7 @@ pub module command_processor::<AddressBits: u32, MaxWidth: u32, MaxHeight: u32> 
     var p16_out_data : logic<16>;
     var p16_in_ready : logic    ;
 
-    inst u_packer16: byte_packer #(
+    inst u_packer16: fpga_lib::byte_packer #(
         OutputBytes: 2,
     ) (
         i_clk  : i_clk                 ,
@@ -126,7 +126,7 @@ pub module command_processor::<AddressBits: u32, MaxWidth: u32, MaxHeight: u32> 
     var p24_out_data : logic<24>;
     var p24_in_ready : logic    ;
 
-    inst u_packer24: byte_packer #(
+    inst u_packer24: fpga_lib::byte_packer #(
         OutputBytes: 3,
     ) (
         i_clk  : i_clk                 ,
@@ -149,7 +149,7 @@ pub module command_processor::<AddressBits: u32, MaxWidth: u32, MaxHeight: u32> 
     var rq_out_data : logic<16>;
     var rq_in_ready : logic    ;
 
-    inst u_reader_queue: packet_queue::<video_pkg::PixelType> #(
+    inst u_reader_queue: fpga_lib::packet_queue::<fpga_lib::video_pkg::PixelType> #(
         DepthBits: 11, // 2048 entries
     ) (
         i_clk  : i_clk                            ,
@@ -169,9 +169,9 @@ pub module command_processor::<AddressBits: u32, MaxWidth: u32, MaxHeight: u32> 
     assign pixel_mux_in[3].payload = rq_out_data;
 
     // ---- Command stream (demux index 0) through a register slice ----
-    inst cmd_stream: stream_if::<spi_pkg::SpiData>;
+    inst cmd_stream: fpga_lib::stream_if::<fpga_lib::spi_pkg::SpiData>;
 
-    inst u_data_slice: irrevocable_reg_slice::<spi_pkg::SpiData> (
+    inst u_data_slice: fpga_lib::irrevocable_reg_slice::<fpga_lib::spi_pkg::SpiData> (
         i_clk : i_clk           ,
         i_rst : i_rst           ,
         i_data: spi_demux_out[0],
@@ -183,9 +183,9 @@ pub module command_processor::<AddressBits: u32, MaxWidth: u32, MaxHeight: u32> 
     let data_body : logic<8> = cmd_stream.payload.data;
 
     // ---- Pixel data to the stream writer through a register slice ----
-    inst pixel_slice_out: stream_if::<video_pkg::PixelType>;
+    inst pixel_slice_out: fpga_lib::stream_if::<fpga_lib::video_pkg::PixelType>;
 
-    inst u_pixel_slice: irrevocable_reg_slice::<video_pkg::PixelType> (
+    inst u_pixel_slice: fpga_lib::irrevocable_reg_slice::<fpga_lib::video_pkg::PixelType> (
         i_clk : i_clk          ,
         i_rst : i_rst          ,
         i_data: pixel_mux_out  ,
@@ -242,9 +242,9 @@ pub module command_processor::<AddressBits: u32, MaxWidth: u32, MaxHeight: u32> 
     var is_last_result: logic   ;
 
     // Registered commands to reader/writer
-    var reader_command      : video_pkg::StreamReaderCommand::<AddressBits, MaxWidth, MaxHeight>;
+    var reader_command      : fpga_lib::video_pkg::StreamReaderCommand::<AddressBits, MaxWidth, MaxHeight>;
     var reader_command_valid: logic                                                             ;
-    var writer_command      : video_pkg::StreamWriterCommand::<AddressBits, MaxWidth, MaxHeight>;
+    var writer_command      : fpga_lib::video_pkg::StreamWriterCommand::<AddressBits, MaxWidth, MaxHeight>;
     var writer_command_valid: logic                                                             ;
     var reader_is_busy_prev : logic                                                             ;
     var writer_is_busy_prev : logic                                                             ;
@@ -255,8 +255,8 @@ pub module command_processor::<AddressBits: u32, MaxWidth: u32, MaxHeight: u32> 
     assign o_writer_command       = writer_command;
 
     // Configuration registers
-    var frame_buffer_config     : video_pkg::FrameBufferReaderConfig;
-    var video_config            : video_pkg::VideoConfig            ;
+    var frame_buffer_config     : fpga_lib::video_pkg::FrameBufferReaderConfig;
+    var video_config            : fpga_lib::video_pkg::VideoConfig            ;
     var video_config_valid      : logic                             ;
     var video_clock_config      : command_pkg::VideoClockConfig     ;
     var video_clock_config_valid: logic                             ;
@@ -334,20 +334,20 @@ pub module command_processor::<AddressBits: u32, MaxWidth: u32, MaxHeight: u32> 
     let clock_output_divider  : logic<16> = {params[4], params[5]};
     let use_half_clock        : logic     = params[6][0];
 
-    var res_params_v: video_pkg::VideoConfig;
-    var res_params_h: video_pkg::VideoConfig;
+    var res_params_v: fpga_lib::video_pkg::VideoConfig;
+    var res_params_h: fpga_lib::video_pkg::VideoConfig;
     always_comb {
         res_params_v               = video_config;
-        res_params_v.pulse_width_v = ({params[0], params[1]}) as video_pkg::PULSE_WIDTH_V_BITS;
-        res_params_v.back_porch_v  = ({params[2], params[3]}) as video_pkg::BACK_PORCH_V_BITS;
-        res_params_v.pixels_v      = ({params[4], params[5]}) as video_pkg::PIXELS_V_BITS;
-        res_params_v.front_porch_v = ({params[6], params[7]}) as video_pkg::FRONT_PORCH_V_BITS;
+        res_params_v.pulse_width_v = ({params[0], params[1]}) as fpga_lib::video_pkg::PULSE_WIDTH_V_BITS;
+        res_params_v.back_porch_v  = ({params[2], params[3]}) as fpga_lib::video_pkg::BACK_PORCH_V_BITS;
+        res_params_v.pixels_v      = ({params[4], params[5]}) as fpga_lib::video_pkg::PIXELS_V_BITS;
+        res_params_v.front_porch_v = ({params[6], params[7]}) as fpga_lib::video_pkg::FRONT_PORCH_V_BITS;
 
         res_params_h               = video_config;
-        res_params_h.pulse_width_h = ({params[0], params[1]}) as video_pkg::PULSE_WIDTH_H_BITS;
-        res_params_h.back_porch_h  = ({params[2], params[3]}) as video_pkg::BACK_PORCH_H_BITS;
-        res_params_h.pixels_h      = ({params[4], params[5]}) as video_pkg::PIXELS_H_BITS;
-        res_params_h.front_porch_h = ({params[6], params[7]}) as video_pkg::FRONT_PORCH_H_BITS;
+        res_params_h.pulse_width_h = ({params[0], params[1]}) as fpga_lib::video_pkg::PULSE_WIDTH_H_BITS;
+        res_params_h.back_porch_h  = ({params[2], params[3]}) as fpga_lib::video_pkg::BACK_PORCH_H_BITS;
+        res_params_h.pixels_h      = ({params[4], params[5]}) as fpga_lib::video_pkg::PIXELS_H_BITS;
+        res_params_h.front_porch_h = ({params[6], params[7]}) as fpga_lib::video_pkg::FRONT_PORCH_H_BITS;
     }
 
     var pre_decode_counter: logic;
@@ -480,9 +480,9 @@ pub module command_processor::<AddressBits: u32, MaxWidth: u32, MaxHeight: u32> 
             parameter_checksum           = '0;
             results_sent                 = '0;
             is_last_result               = '0;
-            reader_command               = 0 as video_pkg::StreamReaderCommand::<AddressBits, MaxWidth, MaxHeight>;
+            reader_command               = 0 as fpga_lib::video_pkg::StreamReaderCommand::<AddressBits, MaxWidth, MaxHeight>;
             reader_command_valid         = '0;
-            writer_command               = 0 as video_pkg::StreamWriterCommand::<AddressBits, MaxWidth, MaxHeight>;
+            writer_command               = 0 as fpga_lib::video_pkg::StreamWriterCommand::<AddressBits, MaxWidth, MaxHeight>;
             writer_command_valid         = '0;
             reader_is_busy_prev          = '0;
             writer_is_busy_prev          = '0;
@@ -490,9 +490,9 @@ pub module command_processor::<AddressBits: u32, MaxWidth: u32, MaxHeight: u32> 
             frame_buffer_config.scale_y  = 1;
             frame_buffer_config.start_x  = '0;
             frame_buffer_config.start_y  = '0;
-            frame_buffer_config.pixels_h = DefaultPixelsH as video_pkg::PIXELS_H_BITS;
-            frame_buffer_config.pixels_v = DefaultPixelsV as video_pkg::PIXELS_V_BITS;
-            video_config                 = video_pkg::preset_default();
+            frame_buffer_config.pixels_h = DefaultPixelsH as fpga_lib::video_pkg::PIXELS_H_BITS;
+            frame_buffer_config.pixels_v = DefaultPixelsV as fpga_lib::video_pkg::PIXELS_V_BITS;
+            video_config                 = video_presets_pkg::preset_default();
             video_config_valid           = '0;
             video_clock_config           = command_pkg::video_clock_config_default();
             video_clock_config_valid     = '0;
@@ -625,18 +625,18 @@ pub module command_processor::<AddressBits: u32, MaxWidth: u32, MaxHeight: u32> 
                         if !checksum_is_ok {
                             skip_to_first = '1;
                         } else {
-                            frame_buffer_config.scale_x  = scaling_x as video_pkg::SCALE_BITS;
-                            frame_buffer_config.scale_y  = scaling_y as video_pkg::SCALE_BITS;
-                            frame_buffer_config.pixels_h = scaled_logical_width as video_pkg::PIXELS_H_BITS;
-                            frame_buffer_config.pixels_v = scaled_logical_height as video_pkg::PIXELS_V_BITS;
+                            frame_buffer_config.scale_x  = scaling_x as fpga_lib::video_pkg::SCALE_BITS;
+                            frame_buffer_config.scale_y  = scaling_y as fpga_lib::video_pkg::SCALE_BITS;
+                            frame_buffer_config.pixels_h = scaled_logical_width as fpga_lib::video_pkg::PIXELS_H_BITS;
+                            frame_buffer_config.pixels_v = scaled_logical_height as fpga_lib::video_pkg::PIXELS_V_BITS;
                         }
                     } else if command == command_pkg::CMD_SET_SCREEN_ORIGIN {
                         state = State::s_idle;
                         if !checksum_is_ok {
                             skip_to_first = '1;
                         } else {
-                            frame_buffer_config.start_x = screen_origin_x as video_pkg::START_X_BITS;
-                            frame_buffer_config.start_y = screen_origin_y as video_pkg::START_Y_BITS;
+                            frame_buffer_config.start_x = screen_origin_x as fpga_lib::video_pkg::START_X_BITS;
+                            frame_buffer_config.start_y = screen_origin_y as fpga_lib::video_pkg::START_Y_BITS;
                         }
                     } else if (command == command_pkg::CMD_SET_RESOLUTION_V)
                         || (command == command_pkg::CMD_SET_RESOLUTION_H) {

@@ -26,11 +26,11 @@ module test_m5stack_hdmi {
         clk: vclk,
     );
 
-    inst spi_rx: stream_if::<spi_pkg::SpiData>;
-    inst spi_tx: stream_if::<spi_pkg::SpiByte>;
-    inst sdrc  : sdrc_if::<11, 4, 16>;
+    inst spi_rx: fpga_lib::stream_if::<fpga_lib::spi_pkg::SpiData>;
+    inst spi_tx: fpga_lib::stream_if::<fpga_lib::spi_pkg::SpiByte>;
+    inst sdrc  : fpga_lib::sdrc_if::<11, 4, 16>;
 
-    var video         : video_pkg::VideoIO           ;
+    var video         : fpga_lib::video_pkg::VideoIO           ;
     var data_in_sync  : logic                        ;
     var trigger       : logic                        ;
     var proc_busy     : logic                        ;
@@ -64,7 +64,7 @@ module test_m5stack_hdmi {
         o_dbg_copy_rect           : dbg_copy_rect ,
     );
 
-    inst memory: tb_sim_sdrc::<11, 4, 32, 16> #(
+    inst memory: fpga_lib::tb_sim_sdrc::<11, 4, 32, 16> #(
         MemWords: 2048,
     ) (
         i_clk: clk ,

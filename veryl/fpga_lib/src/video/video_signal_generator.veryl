@@ -20,7 +20,13 @@ pub module video_signal_generator::<MaxMultiplierH: u32, MaxMultiplierV: u32> #(
 ) (
     i_clk              : input   clock                                       ,
     i_rst              : input   reset                                       ,
-    i_data             : modport stream_if::<video_pkg::VideoSignal>::slave  ,
+    // Flat valid/ready/payload ports: a fixed stream_if::<...> modport here
+    // would mangle its generic argument without the project prefix, while a
+    // dependent project's interface instance mangles with it, so the emitted
+    // SV types would not match at synthesis (Veryl 0.20.2).
+    i_data_valid       : input   logic                                       ,
+    o_data_ready       : output  logic                                       ,
+    i_data             : input   video_pkg::VideoSignal                      ,
     o_video            : output  video_pkg::VideoIO                          ,
     o_trigger_frame    : output  logic                                       ,
     o_data_in_sync     : output  logic                                       ,
@@ -80,14 +86,14 @@ pub module video_signal_generator::<MaxMultiplierH: u32, MaxMultiplierV: u32> #(
 
     var data_ready: logic;
     always_comb {
-        data_ready = !data_in_sync && !i_data.payload.start_of_frame;
+        data_ready = !data_in_sync && !i_data.start_of_frame;
         if first_of_mult {
             data_ready = '1;
         }
     }
-    assign i_data.ready = data_ready;
+    assign o_data_ready = data_ready;
 
-    let pixel_mux: logic<video_pkg::PIXEL_BITS> = if i_data.valid && data_in_sync ? i_data.payload.pixel_data : '0;
+    let pixel_mux: logic<video_pkg::PIXEL_BITS> = if i_data_valid && data_in_sync ? i_data.pixel_data : '0;
 
     let advance_v : logic = (state_h == TState::s_front)
         && (inactive_counter_h == ((video_config.front_porch_h - 1) as INACTIVE_H_BITS));
@@ -173,7 +179,7 @@ pub module video_signal_generator::<MaxMultiplierH: u32, MaxMultiplierV: u32> #(
                             }
                             if multiplier_h == '0 {
                                 // First pixel of the multiplication: consume the stream
-                                data_in_sync = i_data.valid;
+                                data_in_sync = i_data_valid;
                                 data         = pixel_mux;
                             }
                         } else {

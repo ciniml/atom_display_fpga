@@ -7,7 +7,7 @@
 //
 // m5stack_hdmi_core takes the SPI RX/TX byte streams so the native
 // simulator can drive them directly; the m5stack_hdmi wrapper adds the
-// spi_slave (SCK/CS clock domains) for synthesis.
+// fpga_lib::spi_slave (SCK/CS clock domains) for synthesis.
 //
 // Real design instantiation (matching the Chisel elaboration):
 //   m5stack_hdmi_core::<24, 22, 2048, 2048, 4096, 80, 128, 106>
@@ -40,28 +40,28 @@ pub module m5stack_hdmi_core::<
     // Video clock domain
     i_video_clk: input 'video clock,
     i_video_rst: input 'video reset,
-    // SPI byte streams (main domain; from/to spi_slave)
-    i_spi_receive: modport 'main stream_if::<spi_pkg::SpiData>::slave ,
-    o_spi_send   : modport 'main stream_if::<spi_pkg::SpiByte>::master,
+    // SPI byte streams (main domain; from/to fpga_lib::spi_slave)
+    i_spi_receive: modport 'main fpga_lib::stream_if::<fpga_lib::spi_pkg::SpiData>::slave ,
+    o_spi_send   : modport 'main fpga_lib::stream_if::<fpga_lib::spi_pkg::SpiByte>::master,
     // Video output (video domain)
-    o_video       : output 'video video_pkg::VideoIO,
+    o_video       : output 'video fpga_lib::video_pkg::VideoIO,
     o_data_in_sync: output 'video logic             ,
     // Status / control (main domain)
     o_trigger          : output 'main logic,
     o_processor_is_busy: output 'main logic,
     // SDRAM controller
-    sdrc: modport 'main sdrc_if::<SdrcAddressBits, 4, MaxBurstLength>::host,
+    sdrc: modport 'main fpga_lib::sdrc_if::<SdrcAddressBits, 4, MaxBurstLength>::host,
     // Video clock PLL reconfiguration (to top.sv)
     o_video_clock_config_valid: output 'main logic                        ,
     o_video_clock_config      : output 'main command_pkg::VideoClockConfig,
     o_dbg_copy_rect           : output 'main logic                        ,
 ) {
     // ---- SPI receive queue -> command processor ----
-    inst spi_rx_q_out : stream_if::<spi_pkg::SpiData>;
-    inst spi_rx_sliced: stream_if::<spi_pkg::SpiData>;
-    inst proc_result  : stream_if::<spi_pkg::SpiByte>;
+    inst spi_rx_q_out : fpga_lib::stream_if::<fpga_lib::spi_pkg::SpiData>;
+    inst spi_rx_sliced: fpga_lib::stream_if::<fpga_lib::spi_pkg::SpiData>;
+    inst proc_result  : fpga_lib::stream_if::<fpga_lib::spi_pkg::SpiByte>;
 
-    inst u_spi_rx_queue: sync_fifo::<spi_pkg::SpiData> #(
+    inst u_spi_rx_queue: fpga_lib::sync_fifo::<fpga_lib::spi_pkg::SpiData> #(
         DepthBits: 11, // Chisel: Queue(spiSlave.io.receive, 2048)
     ) (
         i_clk  : i_clk        ,
@@ -71,14 +71,14 @@ pub module m5stack_hdmi_core::<
         o_count: _            ,
     );
 
-    inst u_spi_rx_slice: irrevocable_reg_slice::<spi_pkg::SpiData> (
+    inst u_spi_rx_slice: fpga_lib::irrevocable_reg_slice::<fpga_lib::spi_pkg::SpiData> (
         i_clk : i_clk        ,
         i_rst : i_rst        ,
         i_data: spi_rx_q_out ,
         o_data: spi_rx_sliced,
     );
 
-    inst u_result_slice: irrevocable_reg_slice::<spi_pkg::SpiByte> (
+    inst u_result_slice: fpga_lib::irrevocable_reg_slice::<fpga_lib::spi_pkg::SpiByte> (
         i_clk : i_clk      ,
         i_rst : i_rst      ,
         i_data: proc_result,
@@ -88,19 +88,19 @@ pub module m5stack_hdmi_core::<
     // ---- Command processor and stream writer/reader ----
     var rd_cmd_valid: 'main logic                                                                 ;
     var rd_cmd_ready: 'main logic                                                                 ;
-    var rd_cmd      : 'main video_pkg::StreamReaderCommand::<AddressBits, MaxWidth, ProcMaxHeight>;
+    var rd_cmd      : 'main fpga_lib::video_pkg::StreamReaderCommand::<AddressBits, MaxWidth, ProcMaxHeight>;
     var rd_busy     : 'main logic                                                                 ;
     var wr_cmd_valid: 'main logic                                                                 ;
     var wr_cmd_ready: 'main logic                                                                 ;
-    var wr_cmd      : 'main video_pkg::StreamWriterCommand::<AddressBits, MaxWidth, ProcMaxHeight>;
+    var wr_cmd      : 'main fpga_lib::video_pkg::StreamWriterCommand::<AddressBits, MaxWidth, ProcMaxHeight>;
     var wr_busy     : 'main logic                                                                 ;
 
-    inst reader_data: stream_if::<video_pkg::VideoSignal>;
-    inst writer_data: stream_if::<video_pkg::VideoSignal>;
+    inst reader_data: fpga_lib::stream_if::<fpga_lib::video_pkg::VideoSignal>;
+    inst writer_data: fpga_lib::stream_if::<fpga_lib::video_pkg::VideoSignal>;
 
-    var proc_fb_config: 'main video_pkg::FrameBufferReaderConfig;
+    var proc_fb_config: 'main fpga_lib::video_pkg::FrameBufferReaderConfig;
     var vcfg_valid    : 'main logic                             ;
-    var vcfg          : 'main video_pkg::VideoConfig            ;
+    var vcfg          : 'main fpga_lib::video_pkg::VideoConfig            ;
     var vclk_cfg_valid: 'main logic                             ;
     var vclk_cfg      : 'main command_pkg::VideoClockConfig     ;
 
@@ -134,37 +134,49 @@ pub module m5stack_hdmi_core::<
 
     // ---- AXI masters: 0 = frame buffer reader (RO), 1 = writer (WO),
     //      2 = stream reader (RO); lower index = higher priority ----
-    inst demux_in : axi4_if::<AddressBits, 32> [3];
-    inst wr_axi   : axi4_if::<AddressBits, 32>;
-    inst rd_axi   : axi4_if::<AddressBits, 32>;
-    inst demux_out: axi4_if::<AddressBits, 32>;
-    inst mem_axi  : axi4_if::<AddressBits, 32>;
+    inst demux_in : fpga_lib::axi4_if::<AddressBits, 32> [3];
+    inst wr_axi   : fpga_lib::axi4_if::<AddressBits, 32>;
+    inst rd_axi   : fpga_lib::axi4_if::<AddressBits, 32>;
+    inst demux_out: fpga_lib::axi4_if::<AddressBits, 32>;
+    inst mem_axi  : fpga_lib::axi4_if::<AddressBits, 32>;
 
-    inst u_writer: stream_writer::<AddressBits, MaxWidth, ProcMaxHeight, BurstPixels, MaxBurstLength> (
-        i_clk          : i_clk       ,
-        i_rst          : i_rst       ,
-        i_command_valid: wr_cmd_valid,
-        o_command_ready: wr_cmd_ready,
-        i_command      : wr_cmd      ,
-        i_data         : writer_data ,
-        axi            : wr_axi      ,
-        o_busy         : wr_busy     ,
+    var writer_data_ready: 'main logic;
+    assign writer_data.ready = writer_data_ready;
+
+    inst u_writer: fpga_lib::stream_writer::<AddressBits, MaxWidth, ProcMaxHeight, BurstPixels, MaxBurstLength> (
+        i_clk          : i_clk              ,
+        i_rst          : i_rst              ,
+        i_command_valid: wr_cmd_valid       ,
+        o_command_ready: wr_cmd_ready       ,
+        i_command      : wr_cmd             ,
+        i_data_valid   : writer_data.valid  ,
+        o_data_ready   : writer_data_ready  ,
+        i_data         : writer_data.payload,
+        axi            : wr_axi             ,
+        o_busy         : wr_busy            ,
     );
-    inst u_wr_read_tieoff: axi4_read_tieoff::<AddressBits, 32> (
+    inst u_wr_read_tieoff: fpga_lib::axi4_read_tieoff::<AddressBits, 32> (
         axi: wr_axi,
     );
 
-    inst u_reader: stream_reader::<AddressBits, MaxWidth, ProcMaxHeight, BurstPixels, MaxBurstLength> (
-        i_clk          : i_clk       ,
-        i_rst          : i_rst       ,
-        i_command_valid: rd_cmd_valid,
-        o_command_ready: rd_cmd_ready,
-        i_command      : rd_cmd      ,
-        o_data         : reader_data ,
-        axi            : rd_axi      ,
-        o_busy         : rd_busy     ,
+    var reader_data_valid  : 'main logic                           ;
+    var reader_data_payload: 'main fpga_lib::video_pkg::VideoSignal;
+    assign reader_data.valid   = reader_data_valid;
+    assign reader_data.payload = reader_data_payload;
+
+    inst u_reader: fpga_lib::stream_reader::<AddressBits, MaxWidth, ProcMaxHeight, BurstPixels, MaxBurstLength> (
+        i_clk          : i_clk              ,
+        i_rst          : i_rst              ,
+        i_command_valid: rd_cmd_valid       ,
+        o_command_ready: rd_cmd_ready       ,
+        i_command      : rd_cmd             ,
+        o_data_valid   : reader_data_valid  ,
+        i_data_ready   : reader_data.ready  ,
+        o_data         : reader_data_payload,
+        axi            : rd_axi             ,
+        o_busy         : rd_busy            ,
     );
-    inst u_rd_write_tieoff: axi4_write_tieoff::<AddressBits, 32> (
+    inst u_rd_write_tieoff: fpga_lib::axi4_write_tieoff::<AddressBits, 32> (
         axi: rd_axi,
     );
 
@@ -176,7 +188,7 @@ pub module m5stack_hdmi_core::<
     var half_full_r     : 'main logic;
     let enable_fb_access: 'main logic = !fbr_active || half_full_r;
 
-    inst u_wr_gate: axi4_gate::<AddressBits, 32> (
+    inst u_wr_gate: fpga_lib::axi4_gate::<AddressBits, 32> (
         i_clk   : i_clk           ,
         i_rst   : i_rst           ,
         i_enable: enable_fb_access,
@@ -184,7 +196,7 @@ pub module m5stack_hdmi_core::<
         o_axi   : demux_in[1]     ,
     );
 
-    inst u_rd_gate: axi4_gate::<AddressBits, 32> (
+    inst u_rd_gate: fpga_lib::axi4_gate::<AddressBits, 32> (
         i_clk   : i_clk           ,
         i_rst   : i_rst           ,
         i_enable: enable_fb_access,
@@ -194,7 +206,7 @@ pub module m5stack_hdmi_core::<
 
     // ---- Frame buffer reader (video refresh) ----
     var fb_trigger: 'main logic                             ;
-    var fbr_config: 'main video_pkg::FrameBufferReaderConfig;
+    var fbr_config: 'main fpga_lib::video_pkg::FrameBufferReaderConfig;
 
     always_comb {
         fbr_config         = proc_fb_config;
@@ -202,23 +214,30 @@ pub module m5stack_hdmi_core::<
         fbr_config.scale_y = 1;
     }
 
-    inst fbr_data: stream_if::<video_pkg::VideoSignal>;
+    inst fbr_data: fpga_lib::stream_if::<fpga_lib::video_pkg::VideoSignal>;
 
-    inst u_fbr: frame_buffer_reader::<AddressBits, MaxWidth, MaxHeight, FbrBurstPixels, MaxBurstLength> (
-        i_clk    : i_clk      ,
-        i_rst    : i_rst      ,
-        i_trigger: fb_trigger ,
-        o_active : fbr_active ,
-        i_config : fbr_config ,
-        o_data   : fbr_data   ,
-        axi      : demux_in[0],
+    var fbr_data_valid  : 'main logic                           ;
+    var fbr_data_payload: 'main fpga_lib::video_pkg::VideoSignal;
+    assign fbr_data.valid   = fbr_data_valid;
+    assign fbr_data.payload = fbr_data_payload;
+
+    inst u_fbr: fpga_lib::frame_buffer_reader::<AddressBits, MaxWidth, MaxHeight, FbrBurstPixels, MaxBurstLength> (
+        i_clk       : i_clk           ,
+        i_rst       : i_rst           ,
+        i_trigger   : fb_trigger      ,
+        o_active    : fbr_active      ,
+        i_config    : fbr_config      ,
+        o_data_valid: fbr_data_valid  ,
+        i_data_ready: fbr_data.ready  ,
+        o_data      : fbr_data_payload,
+        axi         : demux_in[0]     ,
     );
-    inst u_fbr_write_tieoff: axi4_write_tieoff::<AddressBits, 32> (
+    inst u_fbr_write_tieoff: fpga_lib::axi4_write_tieoff::<AddressBits, 32> (
         axi: demux_in[0],
     );
 
     // ---- AXI arbitration -> SDRC bridge ----
-    inst u_demux: axi4_priority_demux::<AddressBits, 32> #(
+    inst u_demux: fpga_lib::axi4_priority_demux::<AddressBits, 32> #(
         NumMasters: 3,
     ) (
         i_clk: i_clk    ,
@@ -227,14 +246,14 @@ pub module m5stack_hdmi_core::<
         o_axi: demux_out,
     );
 
-    inst u_axi_slice: axi4_reg_slice::<AddressBits, 32> (
+    inst u_axi_slice: fpga_lib::axi4_reg_slice::<AddressBits, 32> (
         i_clk: i_clk    ,
         i_rst: i_rst    ,
         i_axi: demux_out,
         o_axi: mem_axi  ,
     );
 
-    inst u_sdrc_bridge: sdrc_bridge::<AddressBits, SdrcAddressBits, 4, 32, MaxBurstLength> (
+    inst u_sdrc_bridge: fpga_lib::sdrc_bridge::<AddressBits, SdrcAddressBits, 4, 32, MaxBurstLength> (
         i_clk: i_clk  ,
         i_rst: i_rst  ,
         axi  : mem_axi,
@@ -242,18 +261,18 @@ pub module m5stack_hdmi_core::<
     );
 
     // ---- Pixel path: FBR -> reg slice -> async FIFO -> video domain ----
-    inst fifo_in :        stream_if::<video_pkg::VideoSignal>;
-    inst fifo_out:        stream_if::<video_pkg::VideoSignal>;
-    inst vsg_data: 'video stream_if::<video_pkg::VideoSignal>;
+    inst fifo_in :        fpga_lib::stream_if::<fpga_lib::video_pkg::VideoSignal>;
+    inst fifo_out:        fpga_lib::stream_if::<fpga_lib::video_pkg::VideoSignal>;
+    inst vsg_data: 'video fpga_lib::stream_if::<fpga_lib::video_pkg::VideoSignal>;
 
-    inst u_fbr_slice: irrevocable_reg_slice::<video_pkg::VideoSignal> (
+    inst u_fbr_slice: fpga_lib::irrevocable_reg_slice::<fpga_lib::video_pkg::VideoSignal> (
         i_clk : i_clk   ,
         i_rst : i_rst   ,
         i_data: fbr_data,
         o_data: fifo_in ,
     );
 
-    inst u_fifo: async_fifo::<video_pkg::VideoSignal> #(
+    inst u_fifo: fpga_lib::async_fifo::<fpga_lib::video_pkg::VideoSignal> #(
         DepthBits: FifoDepthBits,
     ) (
         i_wclk     : i_clk         ,
@@ -265,7 +284,7 @@ pub module m5stack_hdmi_core::<
         o_data     : fifo_out      ,
     );
 
-    inst u_vsg_slice: irrevocable_reg_slice::<video_pkg::VideoSignal> (
+    inst u_vsg_slice: fpga_lib::irrevocable_reg_slice::<fpga_lib::video_pkg::VideoSignal> (
         i_clk : i_video_clk,
         i_rst : i_video_rst,
         i_data: fifo_out   ,
@@ -276,23 +295,26 @@ pub module m5stack_hdmi_core::<
     var video_config_valid   : 'main logic                                       ;
     var vcfg_valid_1         : 'main logic                                       ;
     var vcfg_valid_2         : 'main logic                                       ;
-    var vcfg_latched         : 'main video_pkg::VideoConfig                      ;
+    var vcfg_latched         : 'main fpga_lib::video_pkg::VideoConfig                      ;
     var video_clock_config   : 'main command_pkg::VideoClockConfig               ;
     var video_clock_cfg_valid: 'main logic                                       ;
-    var mult_config          : 'main video_pkg::VideoMultiplicationConfig::<8, 8>;
+    var mult_config          : 'main fpga_lib::video_pkg::VideoMultiplicationConfig::<8, 8>;
     var trigger_sync         : 'main logic                                       ;
     var trigger_r            : 'main logic                                       ;
 
 
     // ---- Video signal generator (video domain) ----
     var vsg_cfg_valid_v: 'video logic                                       <2>;
-    var vcfg_video     : 'video video_pkg::VideoConfig                         ;
-    var vsg_mult_0     : 'video video_pkg::VideoMultiplicationConfig::<8, 8>   ;
-    var vsg_mult_1     : 'video video_pkg::VideoMultiplicationConfig::<8, 8>   ;
+    var vcfg_video     : 'video fpga_lib::video_pkg::VideoConfig                         ;
+    var vsg_mult_0     : 'video fpga_lib::video_pkg::VideoMultiplicationConfig::<8, 8>   ;
+    var vsg_mult_1     : 'video fpga_lib::video_pkg::VideoMultiplicationConfig::<8, 8>   ;
     var vsg_trigger    : 'video logic                                          ;
     var vsg_v_active   : 'video logic                                          ;
 
-    inst u_vsg: video_signal_generator::<8, 8> #(
+    var vsg_data_ready: 'video logic;
+    assign vsg_data.ready = vsg_data_ready;
+
+    inst u_vsg: fpga_lib::video_signal_generator::<8, 8> #(
         DefaultBackPorchV : DefaultBackPorchV ,
         DefaultPixelsV    : DefaultPixelsV    ,
         DefaultFrontPorchV: DefaultFrontPorchV,
@@ -304,7 +326,9 @@ pub module m5stack_hdmi_core::<
     ) (
         i_clk              : i_video_clk       ,
         i_rst              : i_video_rst       ,
-        i_data             : vsg_data          ,
+        i_data_valid       : vsg_data.valid    ,
+        o_data_ready       : vsg_data_ready    ,
+        i_data             : vsg_data.payload  ,
         o_video            : o_video           ,
         o_trigger_frame    : vsg_trigger       ,
         o_data_in_sync     : o_data_in_sync    ,
@@ -329,7 +353,7 @@ pub module m5stack_hdmi_core::<
                 trigger_frame_r         = '0;
                 trigger_from_video      = '0;
                 vsg_cfg_valid_v         = '0;
-                vcfg_video              = video_pkg::preset_default();
+                vcfg_video              = video_presets_pkg::preset_default();
                 vsg_mult_0.multiplier_h = 1;
                 vsg_mult_0.multiplier_v = 1;
                 vsg_mult_1.multiplier_h = 1;
@@ -350,7 +374,7 @@ pub module m5stack_hdmi_core::<
                 trigger_sync             = '0;
                 trigger_r                = '0;
                 half_full_r              = '0;
-                vcfg_latched             = video_pkg::preset_default();
+                vcfg_latched             = video_presets_pkg::preset_default();
                 video_config_valid       = '0;
                 vcfg_valid_1             = '0;
                 vcfg_valid_2             = '0;
@@ -395,25 +419,36 @@ pub module m5stack_hdmi (
     i_rst                     : input   'main  reset                        ,
     i_video_clk               : input   'video clock                        ,
     i_video_rst               : input   'video reset                        ,
-    spi                       : modport 'sckp  spi_if::device               ,
-    o_video                   : output  'video video_pkg::VideoIO           ,
+    spi                       : modport 'sckp  fpga_lib::spi_if::device               ,
+    o_video                   : output  'video fpga_lib::video_pkg::VideoIO           ,
     o_data_in_sync            : output  'video logic                        ,
     o_trigger                 : output  'main  logic                        ,
     o_processor_is_busy       : output  'main  logic                        ,
-    sdrc                      : modport 'main  sdrc_if::<22, 4, 80>::host   ,
+    sdrc                      : modport 'main  fpga_lib::sdrc_if::<22, 4, 80>::host   ,
     o_video_clock_config_valid: output  'main  logic                        ,
     o_video_clock_config      : output  'main  command_pkg::VideoClockConfig,
     o_dbg_copy_rect           : output  'main  logic                        ,
 ) {
-    inst spi_receive: stream_if::<spi_pkg::SpiData>;
-    inst spi_send   : stream_if::<spi_pkg::SpiByte>;
+    inst spi_receive: fpga_lib::stream_if::<fpga_lib::spi_pkg::SpiData>;
+    inst spi_send   : fpga_lib::stream_if::<fpga_lib::spi_pkg::SpiByte>;
 
-    inst u_spi_slave: spi_slave (
-        i_clk    : i_clk      ,
-        i_rst    : i_rst      ,
-        spi      : spi        ,
-        o_receive: spi_receive,
-        i_send   : spi_send   ,
+    var spi_receive_valid  : 'main logic                     ;
+    var spi_receive_payload: 'main fpga_lib::spi_pkg::SpiData;
+    var spi_send_ready     : 'main logic                     ;
+    assign spi_receive.valid   = spi_receive_valid;
+    assign spi_receive.payload = spi_receive_payload;
+    assign spi_send.ready      = spi_send_ready;
+
+    inst u_spi_slave: fpga_lib::spi_slave (
+        i_clk          : i_clk              ,
+        i_rst          : i_rst              ,
+        spi            : spi                ,
+        o_receive_valid: spi_receive_valid  ,
+        i_receive_ready: spi_receive.ready  ,
+        o_receive      : spi_receive_payload,
+        i_send_valid   : spi_send.valid     ,
+        o_send_ready   : spi_send_ready     ,
+        i_send         : spi_send.payload   ,
     );
 
     unsafe (cdc) {

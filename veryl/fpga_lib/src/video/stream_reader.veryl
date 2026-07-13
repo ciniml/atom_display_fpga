@@ -1,20 +1,32 @@
-// stream_writer.veryl
-// Writes a rectangular region of the frame buffer, line by line, from a
-// pixel stream or a fill color. Supports backward (bottom-up) transfers
-// for overlapping COPYRECT operations.
-// Veryl port of fpga_samples stream_writer.scala (StreamWriter).
+// stream_reader.veryl
+// Reads a rectangular region of the frame buffer, line by line, into a
+// pixel stream. Supports backward (bottom-up) transfers for overlapping
+// COPYRECT operations.
+// Veryl port of fpga_samples stream_reader.scala (StreamReader).
 // SPDX-License-Identifier: BSL-1.0
 
-pub module stream_writer::<AddressBits: u32, MaxWidth: u32, MaxHeight: u32, BurstPixels: u32, MaxBurstLength: u32> (
+pub module stream_reader::<AddressBits: u32, MaxWidth: u32, MaxHeight: u32, BurstPixels: u32, MaxBurstLength: u32> (
     i_clk          : input   clock                                                             ,
     i_rst          : input   reset                                                             ,
     i_command_valid: input   logic                                                             ,
     o_command_ready: output  logic                                                             ,
-    i_command      : input   video_pkg::StreamWriterCommand::<AddressBits, MaxWidth, MaxHeight>,
-    i_data         : modport stream_if::<video_pkg::VideoSignal>::slave                        ,
-    axi            : modport axi4_if::<AddressBits, 32>::write_master                          ,
+    i_command      : input   video_pkg::StreamReaderCommand::<AddressBits, MaxWidth, MaxHeight>,
+    // Flat valid/ready/payload ports: a fixed stream_if::<...> modport here
+    // would mangle its generic argument without the project prefix, while a
+    // dependent project's interface instance mangles with it, so the emitted
+    // SV types would not match at synthesis (Veryl 0.20.2).
+    o_data_valid   : output  logic                                                             ,
+    i_data_ready   : input   logic                                                             ,
+    o_data         : output  video_pkg::VideoSignal                                            ,
+    axi            : modport axi4_if::<AddressBits, 32>::read_master                           ,
     o_busy         : output  logic                                                             ,
 ) {
+    inst data: stream_if::<video_pkg::VideoSignal>;
+
+    assign o_data_valid = data.valid;
+    assign o_data       = data.payload;
+    assign data.ready   = i_data_ready;
+
     const PIXEL_BYTES      : u32 = video_pkg::PIXEL_BYTES;
     const LINE_STRIDE_BYTES: u32 = PIXEL_BYTES * MaxWidth;
     const COUNT_V_BITS     : u32 = $clog2(MaxHeight + 1);
@@ -26,20 +38,20 @@ pub module stream_writer::<AddressBits: u32, MaxWidth: u32, MaxHeight: u32, Burs
     }
     var state: State;
 
-    var command: video_pkg::StreamWriterCommand::<AddressBits, MaxWidth, MaxHeight>;
+    var command: video_pkg::StreamReaderCommand::<AddressBits, MaxWidth, MaxHeight>;
 
-    var line_command      : video_pkg::LineWriterCommand::<AddressBits, MaxWidth>;
+    var line_command      : video_pkg::LineReaderCommand::<AddressBits, MaxWidth>;
     var line_command_valid: logic                                                ;
     var line_command_ready: logic                                                ;
     var line_busy         : logic                                                ;
 
-    inst u_line_writer: line_writer::<AddressBits, MaxWidth, BurstPixels, MaxBurstLength> (
+    inst u_line_reader: line_reader::<AddressBits, MaxWidth, BurstPixels, MaxBurstLength> (
         i_clk          : i_clk             ,
         i_rst          : i_rst             ,
         i_command_valid: line_command_valid,
         o_command_ready: line_command_ready,
         i_command      : line_command      ,
-        i_data         : i_data            ,
+        o_data         : data              ,
         axi            : axi               ,
         o_busy         : line_busy         ,
     );
@@ -58,8 +70,8 @@ pub module stream_writer::<AddressBits: u32, MaxWidth: u32, MaxHeight: u32, Burs
     always_ff {
         if_reset {
             state              = State::s_idle;
-            command            = 0 as video_pkg::StreamWriterCommand::<AddressBits, MaxWidth, MaxHeight>;
-            line_command       = 0 as video_pkg::LineWriterCommand::<AddressBits, MaxWidth>;
+            command            = 0 as video_pkg::StreamReaderCommand::<AddressBits, MaxWidth, MaxHeight>;
+            line_command       = 0 as video_pkg::LineReaderCommand::<AddressBits, MaxWidth>;
             line_command_valid = '0;
             line_start_address = '0;
             lines_remaining    = '0;
@@ -80,16 +92,14 @@ pub module stream_writer::<AddressBits: u32, MaxWidth: u32, MaxHeight: u32, Burs
                     }
                 }
                 State::s_decode: {
-                    line_command.do_fill = command.do_fill;
-                    line_command.color   = command.color;
-                    line_command.count   = command.end_x_inclusive - command.start_x + 1;
-                    line_start_address   = calculated_line_start;
-                    lines_remaining      = if is_backward ?
+                    line_command.count = command.end_x_inclusive - command.start_x + 1;
+                    line_start_address = calculated_line_start;
+                    lines_remaining    = if is_backward ?
                         command.start_y - command.end_y_inclusive + 1
                     :
                         command.end_y_inclusive - command.start_y + 1
                     ;
-                    state                = State::s_running;
+                    state              = State::s_running;
                 }
                 State::s_running: {
                     if lines_remaining == '0 {

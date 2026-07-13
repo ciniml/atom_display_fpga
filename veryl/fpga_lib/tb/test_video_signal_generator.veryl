@@ -24,6 +24,9 @@ module test_video_signal_generator {
     var mult      : video_pkg::VideoMultiplicationConfig::<8, 8>;
     var v_active  : logic                                       ;
 
+    var s_data_ready: logic;
+    assign s_data.ready = s_data_ready;
+
     inst dut: video_signal_generator::<8, 8> #(
         DefaultBackPorchV : 2,
         DefaultPixelsV    : 4,
@@ -36,7 +39,9 @@ module test_video_signal_generator {
     ) (
         i_clk              : clk       ,
         i_rst              : rst       ,
-        i_data             : s_data    ,
+        i_data_valid       : s_data.valid  ,
+        o_data_ready       : s_data_ready  ,
+        i_data             : s_data.payload,
         o_video            : video     ,
         o_trigger_frame    : trigger   ,
         o_data_in_sync     : in_sync   ,

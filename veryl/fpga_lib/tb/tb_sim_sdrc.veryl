@@ -3,7 +3,7 @@
 // including the measured command latencies and the delayed busy_n
 // assertion of the real IP.
 // Veryl port of fpga_samples gowin/sdram.scala (SimSDRC).
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: BSL-1.0
 
 pub module tb_sim_sdrc::<AddressBits: u32, DataBytes: u32, DataBits: u32, MaxBurstLength: u32> #(
     param MemWords: u32 = 1024,

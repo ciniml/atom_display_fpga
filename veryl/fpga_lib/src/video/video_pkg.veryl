@@ -183,71 +183,8 @@ pub package video_pkg {
         return total;
     }
 
-    // Presets (Chisel: PresetVideoParams) as runtime VideoConfig values.
-    // Argument order: bpV, pxV, fpV, pwV, bpH, pxH, fpH, pwH
-
-    /// Default_1280_720_60
-    function preset_720p () -> VideoConfig {
-        return config_value(20, 720, 5, 5, 220, 1280, 110, 40);
-    }
-    /// Default_1920_1080_30
-    function preset_1080p30 () -> VideoConfig {
-        return config_value(36, 1080, 4, 5, 148, 1920, 88, 44);
-    }
-    /// Default_1920_1080_24
-    function preset_1080p24 () -> VideoConfig {
-        return config_value(36, 1080, 4, 5, 148, 1920, 638, 44);
-    }
-    /// Generic_1024_768_60
-    function preset_1024x768 () -> VideoConfig {
-        return config_value(63, 768, 64, 5, 117, 1024, 117, 117);
-    }
-    /// TwiHai_480_1920_60
-    function preset_480x1920 () -> VideoConfig {
-        return config_value(20, 1920, 10, 5, 51, 480, 51, 51);
-    }
-    /// Circular_480_480_60
-    function preset_480x480 () -> VideoConfig {
-        return config_value(135, 480, 130, 5, 390, 480, 390, 390);
-    }
-    /// LowPixelClock_640_480_60_CVT
-    function preset_640x480_cvt () -> VideoConfig {
-        return config_value(13, 480, 3, 4, 80, 640, 16, 64);
-    }
-    /// LowPixelClock_640_480_60_CEA_861
-    function preset_640x480_cea () -> VideoConfig {
-        return config_value(33, 480, 10, 2, 48, 640, 16, 96);
-    }
-    /// LowPixelClock_ARGlass_640_400_59p94
-    function preset_arglass_640x400 () -> VideoConfig {
-        return config_value(32, 400, 87, 6, 58, 640, 96, 64);
-    }
-    /// XrealAir_960_540_60
-    function preset_xreal_air () -> VideoConfig {
-        return config_value(36, 1080, 4, 5, 74, 960, 44, 22);
-    }
-
-    // Design default resolution (Chisel: defaultVideoParams = Default_1280_720_60).
-    // Also exposed as raw constants for module parameters.
-    const DEFAULT_BACK_PORCH_V : u32 = 20;
-    const DEFAULT_PIXELS_V     : u32 = 720;
-    const DEFAULT_FRONT_PORCH_V: u32 = 5;
-    const DEFAULT_PULSE_WIDTH_V: u32 = 5;
-    const DEFAULT_BACK_PORCH_H : u32 = 220;
-    const DEFAULT_PIXELS_H     : u32 = 1280;
-    const DEFAULT_FRONT_PORCH_H: u32 = 110;
-    const DEFAULT_PULSE_WIDTH_H: u32 = 40;
-
-    function preset_default () -> VideoConfig {
-        return config_value(
-            DEFAULT_BACK_PORCH_V,
-            DEFAULT_PIXELS_V,
-            DEFAULT_FRONT_PORCH_V,
-            DEFAULT_PULSE_WIDTH_V,
-            DEFAULT_BACK_PORCH_H,
-            DEFAULT_PIXELS_H,
-            DEFAULT_FRONT_PORCH_H,
-            DEFAULT_PULSE_WIDTH_H,
-        );
-    }
+    // ATOM Display specific presets and the design default resolution
+    // (Chisel: PresetVideoParams / defaultVideoParams) live in the GPL
+    // video_presets_pkg, since they are design-specific rather than part
+    // of the reusable timing types.
 }

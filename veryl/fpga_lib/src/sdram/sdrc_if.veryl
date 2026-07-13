@@ -1,7 +1,7 @@
 // sdrc_if.veryl
 // GOWIN SDRAM controller (SDRC) command interface.
 // Veryl port of fpga_samples gowin/sdram.scala (SDRAMBridgeParams / SDRCIO).
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: BSL-1.0
 
 /// SDRC interface, parameterized like Chisel's SDRAMBridgeParams:
 /// word address width, data bytes per word, and max burst length in words.

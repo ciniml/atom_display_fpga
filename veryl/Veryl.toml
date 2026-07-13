@@ -12,3 +12,6 @@ target = {type = "directory", path = "target"}
 #evaluate_size_limit = 8388608
 
 omit_project_prefix = true
+
+[dependencies]
+fpga_lib = { path = "fpga_lib" }

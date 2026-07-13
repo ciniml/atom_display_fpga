@@ -9,6 +9,7 @@
 set THIS_DIR   [file dirname [file normalize [info script]]]
 set CHISEL_SRC ${THIS_DIR}/../atomdisplay/src
 set VERYL_OUT  ${THIS_DIR}/../../veryl/target
+set VERYL_DEPS ${THIS_DIR}/../../veryl/dependencies
 
 set_option -output_base_name atomdisplay_veryl
 set_device -name GW1NR-9C GW1NR-LV9QN88C6/I5
@@ -23,8 +24,14 @@ set_option -use_jtag_as_gpio 1
 set_option -use_sspi_as_gpio 1
 set_option -use_mspi_as_gpio 1
 
-# Veryl design output (subdirectories only: axi/command/sdram/spi/system/util/video)
+# Veryl design output (subdirectories only: command/system;
+# tests are emitted at the target root and excluded)
 foreach f [lsort [glob ${VERYL_OUT}/*/*.sv]] {
+    add_file -type verilog [file normalize $f]
+}
+
+# fpga_lib dependency output (src only; tb/ holds simulation models and tests)
+foreach f [lsort [glob ${VERYL_DEPS}/fpga_lib/src/*/*.sv]] {
     add_file -type verilog [file normalize $f]
 }
 

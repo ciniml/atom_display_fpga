@@ -11,17 +11,17 @@
 pub module sync_fifo::<T: type> #(
     param DepthBits: u32 = 5,
 ) (
-    i_clk  : input   clock                 ,
-    i_rst  : input   reset                 ,
-    i_data : modport stream_if::<T>::slave ,
-    o_data : modport stream_if::<T>::master,
-    o_count: output  logic<DepthBits + 1>  ,
+    i_clk  : input   clock                                ,
+    i_rst  : input   reset                                ,
+    i_data : modport stream_if::<T>::slave                ,
+    o_data : modport stream_if::<T>::master               ,
+    o_count: output  logic                 <DepthBits + 1>,
 ) {
     const DEPTH: u32 = 1 << DepthBits;
 
-    var mem: T [DEPTH];
-    var rp : logic<DepthBits + 1>; // RAM read pointer
-    var wp : logic<DepthBits + 1>; // RAM write pointer
+    var mem: T                    [DEPTH];
+    var rp : logic<DepthBits + 1>        ; // RAM read pointer
+    var wp : logic<DepthBits + 1>        ; // RAM write pointer
 
     let mem_empty: logic = rp == wp;
     let mem_full : logic = (rp[DepthBits] != wp[DepthBits]) && (rp[DepthBits - 1:0] == wp[DepthBits - 1:0]);
@@ -72,8 +72,8 @@ pub module sync_fifo::<T: type> #(
                 out_valid = '0;
             }
             if load_out {
-                out_valid = '1;
-                rp += 1;
+                out_valid =  '1;
+                rp        += 1;
             }
             count_q = count_q + (if do_enq ? 1'b1 : 1'b0) - (if do_deq ? 1'b1 : 1'b0);
         }

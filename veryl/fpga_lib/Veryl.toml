@@ -1,0 +1,11 @@
+[project]
+name = "fpga_lib"
+version = "0.1.0"
+
+[build]
+clock_type = "posedge"
+reset_type = "async_high"
+sources = ["src", "tb"]
+target = {type = "directory", path = "target"}
+
+omit_project_prefix = true

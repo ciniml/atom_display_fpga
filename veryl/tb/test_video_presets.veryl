@@ -1,0 +1,33 @@
+// Unit test for video_presets_pkg (command/video_presets_pkg.veryl):
+// the ATOM Display specific timing presets built on fpga_lib::video_pkg's types.
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+#[test(test_video_presets)]
+#[allow(unassign_variable)]
+module test_video_presets {
+    var cfg: fpga_lib::video_pkg::VideoConfig;
+
+    initial {
+        // 720p default preset
+        cfg     = video_presets_pkg::preset_default();
+        $assert(cfg.back_porch_v == 20);
+        $assert(cfg.pixels_v == 720);
+        $assert(cfg.front_porch_v == 5);
+        $assert(cfg.pulse_width_v == 5);
+        $assert(cfg.back_porch_h == 220);
+        $assert(cfg.pixels_h == 1280);
+        $assert(cfg.front_porch_h == 110);
+        $assert(cfg.pulse_width_h == 40);
+        $assert(fpga_lib::video_pkg::total_counts_h(cfg) == 1650);
+        $assert(fpga_lib::video_pkg::total_counts_v(cfg) == 750);
+
+        // Xreal Air preset (960x540 on 1080p timing, halved horizontal)
+        cfg     = video_presets_pkg::preset_xreal_air();
+        $assert(cfg.pixels_h == 960);
+        $assert(cfg.pixels_v == 1080);
+        $assert(fpga_lib::video_pkg::total_counts_h(cfg) == 1100);
+        $assert(fpga_lib::video_pkg::total_counts_v(cfg) == 1125);
+
+        $finish();
+    }
+}

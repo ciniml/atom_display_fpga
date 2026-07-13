@@ -1,4 +1,6 @@
-// Unit test for video_pkg (video/video_pkg.veryl)
+// Unit test for video_pkg (video/video_pkg.veryl): the reusable timing
+// types, sizing constants, and config helpers. ATOM-Display-specific
+// presets are tested separately in test_video_presets (GPL).
 // SPDX-License-Identifier: BSL-1.0
 
 #[test(test_video_pkg)]
@@ -25,8 +27,9 @@ module test_video_pkg {
         $assert($bits(video) == 19);
         $assert($bits(mult_cfg) == 8);
 
-        // 720p default preset
-        cfg     = video_pkg::preset_default();
+        // config_value + total_counts on a 720p-shaped timing
+        // (bpV,pxV,fpV,pwV, bpH,pxH,fpH,pwH)
+        cfg     = video_pkg::config_value(20, 720, 5, 5, 220, 1280, 110, 40);
         $assert(cfg.back_porch_v == 20);
         $assert(cfg.pixels_v == 720);
         $assert(cfg.front_porch_v == 5);
@@ -37,13 +40,6 @@ module test_video_pkg {
         $assert(cfg.pulse_width_h == 40);
         $assert(video_pkg::total_counts_h(cfg) == 1650);
         $assert(video_pkg::total_counts_v(cfg) == 750);
-
-        // Xreal Air preset (960x540 on 1080p timing, halved horizontal)
-        cfg     = video_pkg::preset_xreal_air();
-        $assert(cfg.pixels_h == 960);
-        $assert(cfg.pixels_v == 1080);
-        $assert(video_pkg::total_counts_h(cfg) == 1100);
-        $assert(video_pkg::total_counts_v(cfg) == 1125);
 
         $finish();
     }

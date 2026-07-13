@@ -13,25 +13,25 @@ module test_command_processor {
         clk: clk,
     );
 
-    inst spi_rx     : stream_if::<spi_pkg::SpiData>;
-    inst result     : stream_if::<spi_pkg::SpiByte>;
-    inst reader_data: stream_if::<video_pkg::VideoSignal>;
-    inst writer_data: stream_if::<video_pkg::VideoSignal>;
+    inst spi_rx     : fpga_lib::stream_if::<fpga_lib::spi_pkg::SpiData>;
+    inst result     : fpga_lib::stream_if::<fpga_lib::spi_pkg::SpiByte>;
+    inst reader_data: fpga_lib::stream_if::<fpga_lib::video_pkg::VideoSignal>;
+    inst writer_data: fpga_lib::stream_if::<fpga_lib::video_pkg::VideoSignal>;
 
     var is_busy: logic;
 
     var rd_cmd_valid: logic                                       ;
     var rd_cmd_ready: logic                                       ;
-    var rd_cmd      : video_pkg::StreamReaderCommand::<16, 64, 32>;
+    var rd_cmd      : fpga_lib::video_pkg::StreamReaderCommand::<16, 64, 32>;
     var rd_busy     : logic                                       ;
     var wr_cmd_valid: logic                                       ;
     var wr_cmd_ready: logic                                       ;
-    var wr_cmd      : video_pkg::StreamWriterCommand::<16, 64, 32>;
+    var wr_cmd      : fpga_lib::video_pkg::StreamWriterCommand::<16, 64, 32>;
     var wr_busy     : logic                                       ;
 
-    var fb_config     : video_pkg::FrameBufferReaderConfig;
+    var fb_config     : fpga_lib::video_pkg::FrameBufferReaderConfig;
     var vcfg_valid    : logic                             ;
-    var vcfg          : video_pkg::VideoConfig            ;
+    var vcfg          : fpga_lib::video_pkg::VideoConfig            ;
     var vclk_cfg_valid: logic                             ;
     var vclk_cfg      : command_pkg::VideoClockConfig     ;
     var dbg_copy_rect : logic                             ;

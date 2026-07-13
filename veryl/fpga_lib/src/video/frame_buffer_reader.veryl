@@ -17,7 +17,13 @@ pub module frame_buffer_reader::<
     i_trigger: input   logic                                      ,
     o_active : output  logic                                      ,
     i_config : input   video_pkg::FrameBufferReaderConfig         ,
-    o_data   : modport stream_if::<video_pkg::VideoSignal>::master,
+    // Flat valid/ready/payload ports: a fixed stream_if::<...> modport here
+    // would mangle its generic argument without the project prefix, while a
+    // dependent project's interface instance mangles with it, so the emitted
+    // SV types would not match at synthesis (Veryl 0.20.2).
+    o_data_valid: output logic                                     ,
+    i_data_ready: input  logic                                     ,
+    o_data      : output video_pkg::VideoSignal                    ,
     axi      : modport axi4_if::<AddressBits, 32>::read_master    ,
 ) {
     const PIXEL_BYTES      : u32 = video_pkg::PIXEL_BYTES;
@@ -60,10 +66,10 @@ pub module frame_buffer_reader::<
     var pixel_bits              : video_pkg::VideoSignal   ;
     var pixel_multiplier_counter: logic                 <4>;
 
-    assign o_data.valid   = pixel_valid;
-    assign o_data.payload = pixel_bits;
+    assign o_data_valid = pixel_valid;
+    assign o_data       = pixel_bits;
 
-    let load_pixel: logic = reader_data.valid && (!pixel_valid || o_data.ready);
+    let load_pixel: logic = reader_data.valid && (!pixel_valid || i_data_ready);
     assign reader_data.ready = load_pixel && (pixel_multiplier_counter == '0);
 
     // Line repetition stage (Y scaling) and per-frame sequencing
@@ -93,7 +99,7 @@ pub module frame_buffer_reader::<
             start_of_frame           = '0;
         } else {
             // Pixel repetition stage
-            if pixel_valid && o_data.ready {
+            if pixel_valid && i_data_ready {
                 pixel_valid = '0;
             }
             if load_pixel {

@@ -22,13 +22,20 @@ module test_frame_buffer_reader {
     var active: logic                             ;
     var cfg   : video_pkg::FrameBufferReaderConfig;
 
+    var s_data_valid  : logic                 ;
+    var s_data_payload: video_pkg::VideoSignal;
+    assign s_data.valid   = s_data_valid;
+    assign s_data.payload = s_data_payload;
+
     inst dut: frame_buffer_reader::<10, 16, 8, 8, 16> (
         i_clk    : clk   ,
         i_rst    : rst   ,
         i_trigger: trig  ,
         o_active : active,
         i_config : cfg   ,
-        o_data   : s_data,
+        o_data_valid: s_data_valid  ,
+        i_data_ready: s_data.ready  ,
+        o_data      : s_data_payload,
         axi      : axi   ,
     );
 

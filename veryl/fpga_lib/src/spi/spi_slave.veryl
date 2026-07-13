@@ -203,12 +203,30 @@ pub module spi_slave_core (
 /// Synthesis wrapper: derives the SPI clock/reset from the spi_if pins
 /// (Chisel: io.spi.sck.asClock / io.spi.cs.asAsyncReset).
 pub module spi_slave (
-    i_clk    : input   'main clock                                ,
-    i_rst    : input   'main reset                                ,
-    spi      : modport 'sckp spi_if::device                       ,
-    o_receive: modport 'main stream_if::<spi_pkg::SpiData>::master,
-    i_send   : modport 'main stream_if::<spi_pkg::SpiByte>::slave ,
+    i_clk          : input   'main clock           ,
+    i_rst          : input   'main reset           ,
+    spi            : modport 'sckp spi_if::device  ,
+    // Flat valid/ready/payload ports: a fixed stream_if::<...> modport here
+    // would mangle its generic argument without the project prefix, while a
+    // dependent project's interface instance mangles with it, so the emitted
+    // SV types would not match at synthesis (Veryl 0.20.2).
+    o_receive_valid: output  'main logic           ,
+    i_receive_ready: input   'main logic           ,
+    o_receive      : output  'main spi_pkg::SpiData,
+    i_send_valid   : input   'main logic           ,
+    o_send_ready   : output  'main logic           ,
+    i_send         : input   'main spi_pkg::SpiByte,
 ) {
+    inst receive: 'main stream_if::<spi_pkg::SpiData>;
+    inst send   : 'main stream_if::<spi_pkg::SpiByte>;
+
+    assign o_receive_valid = receive.valid;
+    assign o_receive       = receive.payload;
+    assign receive.ready   = i_receive_ready;
+    assign send.valid      = i_send_valid;
+    assign send.payload    = i_send;
+    assign o_send_ready    = send.ready;
+
     unsafe (cdc) {
         inst u_core: spi_slave_core (
             i_clk      : i_clk                   ,
@@ -217,8 +235,8 @@ pub module spi_slave (
             i_spi_clk_n: spi.sck as clock_negedge,
             i_spi_rst  : spi.cs as reset         ,
             i_cs       : spi.cs                  ,
-            o_receive  : o_receive               ,
-            i_send     : i_send                  ,
+            o_receive  : receive                 ,
+            i_send     : send                    ,
             i_mosi     : spi.mosi                ,
             o_miso     : spi.miso                ,
         );

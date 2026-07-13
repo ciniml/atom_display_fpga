@@ -32,7 +32,7 @@ module test_sync_fifo {
         s_in.valid   = 1'b0;
         s_in.payload = 8'h00;
         s_out.ready  = 1'b0;
-        rst.assert(clk);
+        rst.assert  (clk);
 
         $assert(s_out.valid == 1'b0);
         $assert(s_in.ready == 1'b1);
@@ -45,18 +45,18 @@ module test_sync_fifo {
         for _i in 0..8 {
             if s_in.ready {
                 wrote        += 1;
-                clk.next(1);
-                s_in.payload  = (8'ha0 + wrote) as 8;
+                clk.next    (1);
+                s_in.payload = (8'ha0 + wrote) as 8;
             } else {
                 break;
             }
         }
         s_in.valid = 1'b0;
-        $assert(wrote == 4'd5, "total capacity DEPTH+1 = 5");
-        $assert(s_in.ready == 1'b0, "must be full");
-        $assert(count == 3'd5, "count reflects total occupancy");
-        $assert(s_out.valid == 1'b1);
-        $assert(s_out.payload == 8'ha0, "FIFO order");
+        $assert   (wrote == 4'd5, "total capacity DEPTH+1 = 5");
+        $assert   (s_in.ready == 1'b0, "must be full");
+        $assert   (count == 3'd5, "count reflects total occupancy");
+        $assert   (s_out.valid == 1'b1);
+        $assert   (s_out.payload == 8'ha0, "FIFO order");
 
         // Drain and verify order (accept one word per cycle it is valid).
         s_out.ready = 1'b1;
@@ -67,14 +67,14 @@ module test_sync_fifo {
                 }
                 clk.next(1);
             }
-            $assert(s_out.valid == 1'b1, "drained word must be present");
-            $assert(s_out.payload == (8'ha0 + i) as 8, "FIFO order");
+            $assert (s_out.valid == 1'b1, "drained word must be present");
+            $assert (s_out.payload == (8'ha0 + i) as 8, "FIFO order");
             clk.next(1);
         }
         s_out.ready = 1'b0;
-        clk.next(2);
-        $assert(s_out.valid == 1'b0, "must be empty after drain");
-        $assert(count == 3'd0);
+        clk.next   (2);
+        $assert    (s_out.valid == 1'b0, "must be empty after drain");
+        $assert    (count == 3'd0);
 
         // Round-trip more than DEPTH words to exercise pointer wrap,
         // one word at a time, checking order is preserved.
@@ -87,8 +87,8 @@ module test_sync_fifo {
                 }
                 clk.next(1);
             }
-            $assert(s_in.ready == 1'b1, "must accept the word");
-            clk.next(1);
+            $assert   (s_in.ready == 1'b1, "must accept the word");
+            clk.next  (1);
             s_in.valid = 1'b0;
 
             s_out.ready = 1'b1;
@@ -98,10 +98,10 @@ module test_sync_fifo {
                 }
                 clk.next(1);
             }
-            $assert(s_out.valid == 1'b1, "word must come back");
-            got = s_out.payload;
-            $assert(got == (8'h10 + i) as 8, "order preserved across wrap");
-            clk.next(1);
+            $assert    (s_out.valid == 1'b1, "word must come back");
+            got         = s_out.payload;
+            $assert    (got == (8'h10 + i) as 8, "order preserved across wrap");
+            clk.next   (1);
             s_out.ready = 1'b0;
         }
 

@@ -21,13 +21,20 @@ module test_stream_reader {
     var cmd      : video_pkg::StreamReaderCommand::<10, 16, 8>;
     var busy     : logic                                      ;
 
+    var s_data_valid  : logic                 ;
+    var s_data_payload: video_pkg::VideoSignal;
+    assign s_data.valid   = s_data_valid;
+    assign s_data.payload = s_data_payload;
+
     inst dut: stream_reader::<10, 16, 8, 8, 16> (
         i_clk          : clk      ,
         i_rst          : rst      ,
         i_command_valid: cmd_valid,
         o_command_ready: cmd_ready,
         i_command      : cmd      ,
-        o_data         : s_data   ,
+        o_data_valid   : s_data_valid  ,
+        i_data_ready   : s_data.ready  ,
+        o_data         : s_data_payload,
         axi            : axi      ,
         o_busy         : busy     ,
     );
