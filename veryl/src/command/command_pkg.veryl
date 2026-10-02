@@ -5,6 +5,18 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 pub package command_pkg {
+    /// SDRAM burst sizing (Chisel: m5stackhdmi.scala maxBurstPixels = 160).
+    /// The SDRC burst length limit scales with the pixel size:
+    /// 80 words at 16bpp, 120 words at 24bpp. The frame buffer reader's
+    /// burst pixel count uses the Chisel FrameBufferReader derivation
+    /// (maxBurst * 4 / 3): 106 pixels at 16bpp, 160 pixels at 24bpp.
+    /// The stream writer/reader burst (128 pixels) must stay within
+    /// MAX_BURST_LENGTH words: 64 words at 16bpp, 96 words at 24bpp.
+    const MAX_BURST_PIXELS   : u32 = 160;
+    const MAX_BURST_LENGTH   : u32 = MAX_BURST_PIXELS * fpga_lib::video_pkg::PIXEL_BYTES / 4;
+    const FBR_BURST_PIXELS   : u32 = MAX_BURST_LENGTH * 4 / 3;
+    const STREAM_BURST_PIXELS: u32 = 128;
+
     /// Video clock PLL configuration (Chisel: VideoClockConfig bundle).
     /// Divider values feed the GOWIN rPLL dynamic reconfiguration ports
     /// (fbdsel/idsel/odsel) in top.sv.
@@ -45,8 +57,10 @@ pub package command_pkg {
         return cfg;
     }
 
-    /// Color space conversions to the native RGB565 format
-    /// (Chisel: RGB332ToNative / RGB888ToNative for pixelBits == 16).
+    /// Color space conversions to the native pixel format:
+    /// RGB565 at 16bpp, BGR888 (B in the MSB byte) at 24bpp.
+    /// (Chisel: RGB332ToNative / RGB565ToNative / RGB888ToNative.)
+    /// The rgb888 inputs are MSB-first {R, G, B} as packed by byte_packer.
     function rgb332_to_rgb565 (
         rgb332: input logic<8>,
     ) -> logic<16> {
@@ -57,6 +71,57 @@ pub package command_pkg {
         rgb888: input logic<24>,
     ) -> logic<16> {
         return {rgb888[23:19], rgb888[15:10], rgb888[7:3]};
+    }
+
+    function rgb332_to_bgr888 (
+        rgb332: input logic<8>,
+    ) -> logic<24> {
+        return {
+            rgb332[1:0], rgb332[1:0], rgb332[1:0], rgb332[1:0], rgb332[4:2], rgb332[4:2], rgb332[4:3], rgb332[7:5],
+            rgb332[7:5], rgb332[7:6]
+        };
+    }
+
+    function rgb565_to_bgr888 (
+        rgb565: input logic<16>,
+    ) -> logic<24> {
+        return {rgb565[4:0], rgb565[4:2], rgb565[10:5], rgb565[10:9], rgb565[15:11], rgb565[15:13]};
+    }
+
+    function rgb888_to_bgr888 (
+        rgb888: input logic<24>,
+    ) -> logic<24> {
+        return {rgb888[7:0], rgb888[15:8], rgb888[23:16]};
+    }
+
+    function rgb332_to_native (
+        rgb332: input logic<8>,
+    ) -> fpga_lib::video_pkg::PixelType {
+        if fpga_lib::video_pkg::PIXEL_BITS == 16 {
+            return rgb332_to_rgb565(rgb332) as fpga_lib::video_pkg::PixelType;
+        } else {
+            return rgb332_to_bgr888(rgb332) as fpga_lib::video_pkg::PixelType;
+        }
+    }
+
+    function rgb565_to_native (
+        rgb565: input logic<16>,
+    ) -> fpga_lib::video_pkg::PixelType {
+        if fpga_lib::video_pkg::PIXEL_BITS == 16 {
+            return rgb565 as fpga_lib::video_pkg::PixelType;
+        } else {
+            return rgb565_to_bgr888(rgb565) as fpga_lib::video_pkg::PixelType;
+        }
+    }
+
+    function rgb888_to_native (
+        rgb888: input logic<24>,
+    ) -> fpga_lib::video_pkg::PixelType {
+        if fpga_lib::video_pkg::PIXEL_BITS == 16 {
+            return rgb888_to_rgb565(rgb888) as fpga_lib::video_pkg::PixelType;
+        } else {
+            return rgb888_to_bgr888(rgb888) as fpga_lib::video_pkg::PixelType;
+        }
     }
 
     // Single-byte commands (Chisel: object Commands)

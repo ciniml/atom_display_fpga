@@ -2,8 +2,8 @@
 // Writes one line of pixels (from a stream or a fill color) to the
 // frame buffer over AXI4 (write-only, burst), handling unaligned start
 // addresses with a byte realignment buffer and byte strobes.
-// Veryl port of fpga_samples stream_writer.scala (LineWriter),
-// specialized to the design's fixed 16bpp pixels / 32-bit bus.
+// Veryl port of fpga_samples stream_writer.scala (LineWriter).
+// Supports 16bpp and 24bpp pixels (video_pkg::PIXEL_BITS) on a 32-bit bus.
 // SPDX-License-Identifier: BSL-1.0
 
 pub module line_writer::<AddressBits: u32, MaxWidth: u32, BurstPixels: u32, MaxBurstLength: u32> (
@@ -16,13 +16,25 @@ pub module line_writer::<AddressBits: u32, MaxWidth: u32, BurstPixels: u32, MaxB
     axi            : modport axi4_if::<AddressBits, 32>::write_master             ,
     o_busy         : output  logic                                                ,
 ) {
-    const PIXEL_BYTES      : u32 = video_pkg::PIXEL_BYTES; // 2 (16bpp)
+    const PIXEL_BYTES      : u32 = video_pkg::PIXEL_BYTES; // 2 (16bpp) or 3 (24bpp)
     const DATA_BYTES       : u32 = 4; // 32-bit bus
     const ADDR_MASK_BITS   : u32 = 2;
     const WRITE_BURST_WORDS: u32 = BurstPixels * PIXEL_BYTES / DATA_BYTES;
     const COUNT_H_BITS     : u32 = $clog2(MaxWidth + 1);
     const WORDS_BITS       : u32 = $clog2(PIXEL_BYTES * MaxWidth);
     const BYTES_BITS       : u32 = WORDS_BITS + 2;
+    // Realignment buffer size (see line_reader): DATA_BYTES * PIXEL_BYTES,
+    // i.e. 8 bytes at 16bpp and 12 bytes at 24bpp.
+    const REALIGN_BUF_BYTES: u32 = DATA_BYTES * PIXEL_BYTES;
+    const IDX_BITS         : u32 = $clog2(REALIGN_BUF_BYTES);
+    // Slot counts: pixels in / bus words out per buffer
+    const IN_SLOTS     : u32 = REALIGN_BUF_BYTES / PIXEL_BYTES; // = DATA_BYTES
+    const OUT_SLOTS    : u32 = REALIGN_BUF_BYTES / DATA_BYTES; // = PIXEL_BYTES
+    const IN_SLOT_BITS : u32 = $clog2(IN_SLOTS);
+    const OUT_SLOT_BITS: u32 = $clog2(OUT_SLOTS);
+    // Base byte of word slot 2 (24bpp only; folded to 0 at 16bpp where
+    // the slot is unreachable, keeping the constant index in range)
+    const WORD2_BASE   : u32 = (2 * DATA_BYTES) % REALIGN_BUF_BYTES;
 
     enum State: logic<2> {
         s_idle,
@@ -34,43 +46,98 @@ pub module line_writer::<AddressBits: u32, MaxWidth: u32, BurstPixels: u32, MaxB
     var command: video_pkg::LineWriterCommand::<AddressBits, MaxWidth>;
 
     let start_address_aligned: logic<AddressBits> = {command.start_address[AddressBits - 1:ADDR_MASK_BITS], 2'b00};
+    // count * PIXEL_BYTES without a multiplier (x2, or x3 = x2 + x1)
+    let count_bytes_x2       : logic<BYTES_BITS>  = {1'b0 repeat BYTES_BITS - COUNT_H_BITS - 1, command.count, 1'b0};
+    let count_bytes          : logic<BYTES_BITS>  = if PIXEL_BYTES == 2 ?
+        count_bytes_x2
+    :
+        count_bytes_x2 + {1'b0 repeat BYTES_BITS - COUNT_H_BITS, command.count}
+    ;
     let bytes_to_transfer    : logic<BYTES_BITS>  = ({1'b0 repeat BYTES_BITS - 2, command.start_address[1:0]})
-        + ({1'b0 repeat BYTES_BITS - COUNT_H_BITS - 1, command.count, 1'b0});
+        + count_bytes;
     let is_last_partial_write: logic              = (bytes_to_transfer & 3) != '0;
     let words_to_transfer    : logic<WORDS_BITS>  = ((bytes_to_transfer + 3) >> 2) as WORDS_BITS;
 
     var next_address               : logic<AddressBits> ;
+    var is_last_partial_q          : logic              ;
     var address_words_remaining    : logic<WORDS_BITS>  ;
     var data_words_remaining       : logic<WORDS_BITS>  ;
     var issued_data_words_remaining: logic<WORDS_BITS>  ;
     var pixels_remaining           : logic<COUNT_H_BITS>;
 
-    // Realignment buffer: in = 2-byte pixels, out = 4-byte bus words.
-    // 8-byte double buffer, 4-bit wrap-around pointers (index + side).
-    var realign_buffer        : logic<8> [8];
-    var realign_buffer_valid  : logic<8>    ;
-    var realign_input_pointer : logic<4>    ;
-    var realign_output_pointer: logic<4>    ;
+    // Realignment buffer: in = PIXEL_BYTES pixels, out = 4-byte bus words.
+    // Positions are tracked as slot counters (pixel slot for the input,
+    // word slot for the output) plus a "lap" parity flag per pointer.
+    // Slots keep the buffer read/write muxes shallow (a byte-granular
+    // index would need an adder in front of a 12:1 byte mux at 24bpp,
+    // which showed up on the critical path) and the full/empty
+    // comparators read register outputs directly.
+    var realign_buffer      : logic<8> [REALIGN_BUF_BYTES];
+    var realign_buffer_valid: logic<REALIGN_BUF_BYTES>    ;
+    var in_slot : logic<IN_SLOT_BITS> ;
+    var out_slot: logic<OUT_SLOT_BITS>;
+    var in_side : logic               ;
+    var out_side: logic               ;
 
-    function advance_pointer (
-        pointer: input logic<4>,
-        adv    : input u32     ,
-    ) -> logic<4> {
-        return if pointer <: ((16 - adv) as 4) ? pointer + (adv as 4) : 4'd0;
+    // Byte positions of the slots (5 bits: values up to 12)
+    let in_bytes : logic<5> = if PIXEL_BYTES == 2 ?
+        {1'b0 repeat 5 - IN_SLOT_BITS - 1, in_slot, 1'b0}
+    :
+        ({1'b0 repeat 5 - IN_SLOT_BITS - 1, in_slot, 1'b0}) + ({1'b0 repeat 5 - IN_SLOT_BITS, in_slot})
+    ;
+    let out_bytes: logic<5> = {1'b0 repeat 5 - OUT_SLOT_BITS - 2, out_slot, 2'b00};
+
+    let realign_full        : logic = ((in_bytes + PIXEL_BYTES) >: out_bytes) && (in_side != out_side);
+    let realign_empty       : logic = ((out_bytes + DATA_BYTES) >: in_bytes) && (in_side == out_side);
+    let realign_partial_data: logic = (out_bytes <: in_bytes) && (in_side == out_side);
+
+    // Pixel phase within the first bus word -> initial slots.
+    // 16bpp: pixel byte = start_address[1] * 2 -> in slot [0, 1].
+    // 24bpp: pixel byte = ((4 - addr[1:0]) % 4) * 3 = [0, 9, 6, 3]
+    //        -> in slot [0, 3, 2, 1]; containing word -> out slot [0, 2, 1, 0].
+    // The input starts at the phase; the output is word aligned.
+    var initial_in_slot : logic<IN_SLOT_BITS> ;
+    var initial_out_slot: logic<OUT_SLOT_BITS>;
+    always_comb {
+        if PIXEL_BYTES == 2 {
+            initial_in_slot  = {1'b0 repeat IN_SLOT_BITS - 1, command.start_address[1]};
+            initial_out_slot = '0;
+        } else {
+            case command.start_address[1:0] {
+                2'd0   : initial_in_slot = 0 as IN_SLOT_BITS;
+                2'd1   : initial_in_slot = 3 as IN_SLOT_BITS;
+                2'd2   : initial_in_slot = 2 as IN_SLOT_BITS;
+                default: initial_in_slot = 1 as IN_SLOT_BITS;
+            }
+            case command.start_address[1:0] {
+                2'd0   : initial_out_slot = 0 as OUT_SLOT_BITS;
+                2'd1   : initial_out_slot = 2 as OUT_SLOT_BITS;
+                2'd2   : initial_out_slot = 1 as OUT_SLOT_BITS;
+                default: initial_out_slot = 0 as OUT_SLOT_BITS;
+            }
+        }
     }
 
-    let in_idx  : logic<3> = realign_input_pointer[2:0];
-    let out_idx : logic<3> = realign_output_pointer[2:0];
-    let in_side : logic    = realign_input_pointer[3];
-    let out_side: logic    = realign_output_pointer[3];
-
-    let realign_full        : logic = (({1'b0, in_idx} + 2) >: {1'b0, out_idx}) && (in_side != out_side);
-    let realign_empty       : logic = (({1'b0, out_idx} + 4) >: {1'b0, in_idx}) && (in_side == out_side);
-    let realign_partial_data: logic = (out_idx <: in_idx) && (in_side == out_side);
-
-    // 16bpp: pixel phase = start_address[1], realign index = phase * 2.
-    // Input pointer starts at the phase; output pointer is word aligned.
-    let initial_pointer: logic<4> = {2'b00, command.start_address[1], 1'b0};
+    // Bus word and strobes assembled from the realignment buffer.
+    // Selected by word slot: a plain 3:1 byte mux without index adders.
+    var word_from_buffer: logic<32>;
+    var strb_from_buffer: logic<4> ;
+    always_comb {
+        case out_slot {
+            0      : for i in 0..4 {
+                word_from_buffer[8 * i+:8] = realign_buffer[i];
+                strb_from_buffer[i]        = realign_buffer_valid[i];
+            }
+            1      : for i in 0..4 {
+                word_from_buffer[8 * i+:8] = realign_buffer[DATA_BYTES + i];
+                strb_from_buffer[i]        = realign_buffer_valid[DATA_BYTES + i];
+            }
+            default: for i in 0..4 {
+                word_from_buffer[8 * i+:8] = realign_buffer[WORD2_BASE + i];
+                strb_from_buffer[i]        = realign_buffer_valid[WORD2_BASE + i];
+            }
+        }
+    }
 
     // AW/W channels (registered)
     var aw_valid: logic             ;
@@ -109,8 +176,11 @@ pub module line_writer::<AddressBits: u32, MaxWidth: u32, BurstPixels: u32, MaxB
             issued_data_words_remaining = '0;
             pixels_remaining            = '0;
             realign_buffer_valid        = '0;
-            realign_input_pointer       = '0;
-            realign_output_pointer      = '0;
+            in_slot                     = '0;
+            out_slot                    = '0;
+            in_side                     = '0;
+            out_side                    = '0;
+            is_last_partial_q           = '0;
             aw_valid                    = '0;
             aw_addr                     = '0;
             aw_len                      = '0;
@@ -135,10 +205,15 @@ pub module line_writer::<AddressBits: u32, MaxWidth: u32, BurstPixels: u32, MaxB
                 }
                 State::s_decode: {
                     pixels_remaining      = command.count;
-                    realign_buffer_valid  = '0;
-                    realign_input_pointer = initial_pointer;
-                    // Output pointer: mask the unaligned address bits.
-                    realign_output_pointer      = '0;
+                    realign_buffer_valid = '0;
+                    in_slot              = initial_in_slot;
+                    out_slot             = initial_out_slot;
+                    in_side              = '0;
+                    out_side             = '0;
+                    // Registered so the last-partial-write condition does
+                    // not drag the bytes_to_transfer adder into the W
+                    // channel's enable cone.
+                    is_last_partial_q           = is_last_partial_write;
                     address_words_remaining     = words_to_transfer;
                     data_words_remaining        = '0;
                     issued_data_words_remaining = '0;
@@ -172,32 +247,58 @@ pub module line_writer::<AddressBits: u32, MaxWidth: u32, BurstPixels: u32, MaxB
                     if (!w_valid || axi.wready)
                         && (!realign_empty
                             || ((address_words_remaining == '0) && (issued_data_words_remaining == '0)
-                                && (data_words_remaining == 1) && is_last_partial_write && realign_partial_data))
+                                && (data_words_remaining == 1) && is_last_partial_q && realign_partial_data))
                         && (data_words_remaining >: '0) {
-                        w_data               = {
-                            realign_buffer[out_idx + 3], realign_buffer[out_idx + 2], realign_buffer[out_idx + 1],
-                            realign_buffer[out_idx]
-                        };
+                        w_data               = word_from_buffer;
                         w_valid              = '1;
-                        w_strb               = {
-                            realign_buffer_valid[out_idx + 3], realign_buffer_valid[out_idx + 2],
-                            realign_buffer_valid[out_idx + 1], realign_buffer_valid[out_idx]
-                        };
+                        w_strb               = strb_from_buffer;
                         w_last               = data_words_remaining == 1;
                         data_words_remaining = data_words_remaining - 1;
-                        for i in 0..4 {
-                            realign_buffer_valid[out_idx + i] = '0;
+                        case out_slot {
+                            0      : for i in 0..4 {
+                                realign_buffer_valid[i] = '0;
+                            }
+                            1      : for i in 0..4 {
+                                realign_buffer_valid[DATA_BYTES + i] = '0;
+                            }
+                            default: for i in 0..4 {
+                                realign_buffer_valid[WORD2_BASE + i] = '0;
+                            }
                         }
-                        realign_output_pointer = advance_pointer(realign_output_pointer, 4);
+                        if out_slot == ((OUT_SLOTS - 1) as OUT_SLOT_BITS) {
+                            out_slot = '0;
+                            out_side = ~out_side;
+                        } else {
+                            out_slot = out_slot + 1;
+                        }
                     }
                     // Input a pixel into the realignment buffer
                     if !realign_full && (pixels_remaining >: '0) && (command.do_fill || i_data.valid) {
-                        for i in 0..2 {
-                            realign_buffer[in_idx + i]       = pixel_data[8 * i+:8];
-                            realign_buffer_valid[in_idx + i] = '1;
+                        case in_slot {
+                            0      : for i in 0..PIXEL_BYTES {
+                                realign_buffer[i]       = pixel_data[8 * i+:8];
+                                realign_buffer_valid[i] = '1;
+                            }
+                            1      : for i in 0..PIXEL_BYTES {
+                                realign_buffer[PIXEL_BYTES + i]       = pixel_data[8 * i+:8];
+                                realign_buffer_valid[PIXEL_BYTES + i] = '1;
+                            }
+                            2      : for i in 0..PIXEL_BYTES {
+                                realign_buffer[2 * PIXEL_BYTES + i]       = pixel_data[8 * i+:8];
+                                realign_buffer_valid[2 * PIXEL_BYTES + i] = '1;
+                            }
+                            default: for i in 0..PIXEL_BYTES {
+                                realign_buffer[3 * PIXEL_BYTES + i]       = pixel_data[8 * i+:8];
+                                realign_buffer_valid[3 * PIXEL_BYTES + i] = '1;
+                            }
                         }
-                        realign_input_pointer = advance_pointer(realign_input_pointer, 2);
-                        pixels_remaining      = pixels_remaining - 1;
+                        if in_slot == ((IN_SLOTS - 1) as IN_SLOT_BITS) {
+                            in_slot = '0;
+                            in_side = ~in_side;
+                        } else {
+                            in_slot = in_slot + 1;
+                        }
+                        pixels_remaining = pixels_remaining - 1;
                     }
 
                     // Transfer complete?

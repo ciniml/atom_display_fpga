@@ -77,7 +77,7 @@ module test_m5stack_hdmi {
     var de_count    : u32      ;
     var x           : u32      ;
     var y           : u32      ;
-    var expected    : logic<16>;
+    var expected    : fpga_lib::video_pkg::PixelType;
     var seen_vsync  : logic    ;
     var frame_done  : logic    ;
 
@@ -225,7 +225,11 @@ module test_m5stack_hdmi {
             if video.data_enable {
                 x        = de_count % 16;
                 y        = de_count / 16;
-                expected = if (x >= 4) && (x <= 7) && (y >= 2) && (y <= 3) ? 16'h07e0 : 16'hf800;
+                expected = if (x >= 4) && (x <= 7) && (y >= 2) && (y <= 3) ?
+    command_pkg::rgb565_to_native(16'h07e0)
+:
+    command_pkg::rgb565_to_native(16'hf800)
+;
                 $assert (video.pixel_data == expected, "frame pixel must match the drawn pattern");
                 de_count += 1;
                 if de_count == 128 {

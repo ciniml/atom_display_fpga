@@ -95,7 +95,7 @@ pub module command_processor::<AddressBits: u32, MaxWidth: u32, MaxHeight: u32> 
     // Index 0: RGB332 bytes -> native
     assign pixel_mux_in[0].valid   = spi_demux_out[1].valid;
     assign spi_demux_out[1].ready  = pixel_mux_in[0].ready;
-    assign pixel_mux_in[0].payload = command_pkg::rgb332_to_rgb565(d1_payload.data);
+    assign pixel_mux_in[0].payload = command_pkg::rgb332_to_native(d1_payload.data);
 
     // Index 1: RGB565 byte pairs -> native
     var p16_out_valid: logic    ;
@@ -118,7 +118,7 @@ pub module command_processor::<AddressBits: u32, MaxWidth: u32, MaxHeight: u32> 
     assign spi_demux_out[2].ready  = p16_in_ready;
     assign pixel_mux_in[1].valid   = p16_out_valid;
     assign p16_out_ready           = pixel_mux_in[1].ready;
-    assign pixel_mux_in[1].payload = p16_out_data;
+    assign pixel_mux_in[1].payload = command_pkg::rgb565_to_native(p16_out_data);
 
     // Index 2: RGB888 byte triples -> native
     var p24_out_valid: logic    ;
@@ -141,12 +141,12 @@ pub module command_processor::<AddressBits: u32, MaxWidth: u32, MaxHeight: u32> 
     assign spi_demux_out[3].ready  = p24_in_ready;
     assign pixel_mux_in[2].valid   = p24_out_valid;
     assign p24_out_ready           = pixel_mux_in[2].ready;
-    assign pixel_mux_in[2].payload = command_pkg::rgb888_to_rgb565(p24_out_data);
+    assign pixel_mux_in[2].payload = command_pkg::rgb888_to_native(p24_out_data);
 
     // Index 3: frame buffer reader data through a packet queue
     var rq_out_valid: logic    ;
     var rq_out_ready: logic    ;
-    var rq_out_data : logic<16>;
+    var rq_out_data : fpga_lib::video_pkg::PixelType;
     var rq_in_ready : logic    ;
 
     inst u_reader_queue: fpga_lib::packet_queue::<fpga_lib::video_pkg::PixelType> #(
@@ -217,7 +217,7 @@ pub module command_processor::<AddressBits: u32, MaxWidth: u32, MaxHeight: u32> 
     let command_type  : logic<8> = command & 8'hf8;
     let command_number: logic<8> = command & 8'h07;
 
-    var current_color  : logic<16>          ;
+    var current_color  : fpga_lib::video_pkg::PixelType;
     var current_x_start: logic<COUNT_H_BITS>;
     var current_y_start: logic<COUNT_H_BITS>;
     var current_x_end  : logic<COUNT_H_BITS>;
@@ -418,16 +418,16 @@ pub module command_processor::<AddressBits: u32, MaxWidth: u32, MaxHeight: u32> 
 
     // New color for DRAW_PIXEL / FILL_RECT (by pixel format suffix)
     function select_color (
-        num   : input logic<8> ,
-        cur   : input logic<16>,
-        rgb332: input logic<8> ,
-        rgb565: input logic<16>,
-        rgb888: input logic<24>,
-    ) -> logic<16> {
+        num   : input logic<8>                       ,
+        cur   : input fpga_lib::video_pkg::PixelType ,
+        rgb332: input logic<8>                       ,
+        rgb565: input logic<16>                      ,
+        rgb888: input logic<24>                      ,
+    ) -> fpga_lib::video_pkg::PixelType {
         case num {
-            8'd1   : return command_pkg::rgb332_to_rgb565(rgb332);
-            8'd2   : return rgb565;
-            8'd3   : return command_pkg::rgb888_to_rgb565(rgb888);
+            8'd1   : return command_pkg::rgb332_to_native(rgb332);
+            8'd2   : return command_pkg::rgb565_to_native(rgb565);
+            8'd3   : return command_pkg::rgb888_to_native(rgb888);
             default: return cur;
         }
     }

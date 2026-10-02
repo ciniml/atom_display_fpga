@@ -4,8 +4,8 @@ M5Stack ATOM Display / Display Module 内蔵 FPGA(GOWIN GW1NR-LV9QN88C6I5)向け
 Chisel(Scala)から Veryl へ移植した作業の記録。RTL 移植・ネイティブシミュレータによる検証・
 GOWIN EDA での合成(ビットストリーム生成・タイミングクロージャ)まで完了。
 
-- 作業期間: 2026-07-11 〜 2026-07-12
-- ブランチ: feature/xreal-air
+- 作業期間: 2026-07-11 〜 2026-07-17
+- ブランチ: feature/veryl-port(着手時は feature/xreal-air)
 - 移植元: `atom_display/`(本体, Chisel 3.5.4)+ `fpga_samples/chisel`(共有ライブラリ, サブモジュール)
 - 移植先: `veryl/`
 - 合成プロジェクト: `eda/atomdisplay_veryl/`
@@ -254,9 +254,62 @@ BRAM 化したため)だが上限内。
 最適化後: BSRAM 15/26(58%)、LUT 3106、Register 3962、CLS 84%、
 clock_main 71.2MHz(全クロック制約達成を維持)。
 
-## 9. 残タスク
+## 9. 24bpp 対応(2026-07-17)
+
+Chisel 版で断念していた 24bpp 構成を移植・実機動作確認。
+16/24 の切替は 2 箇所: `fpga_lib/src/video/video_pkg.veryl` の `PIXEL_BITS` と
+`eda/atomdisplay_veryl/src/top.sv` の `BITS_PER_PIXEL`(既定は 24)。
+
+### 変更内容
+- **line_reader / line_writer**: リアラインバッファを一般化(4×PIXEL_BYTES バイト、
+  24bpp は 12 バイトで非 2 のべき乗)。さらにポインタをバイト単位でなく
+  **スロット単位(入力=ワード/出力=ピクセル)+周回パリティ**の分離レジスタで保持。
+  バッファ読み書きのマックスが 12:1+アダーから 3:1/4:1 直接セレクトになり、
+  タイミングが大幅に改善(下表)。`is_last_partial_write` も decode 時にレジスタ化。
+- **色変換**: `command_pkg` に `rgb332/565/888_to_native`(16bpp: RGB565 /
+  24bpp: BGR888)と BGR888 系変換を追加。command_processor・テストはこれを使用。
+- **アドレス幅**: `video_pkg::ADDRESS_BITS`(24/25)・`SDRC_ADDRESS_BITS`(22/23)を
+  ジェネリック引数として参照(パッケージスコープの const はジェネリック引数に使える。
+  モジュール内 const は不可)。
+- **バースト長(実機ハングの修正)**: Chisel の `maxBurstLength = maxBurstPixels(160)
+  * pixelBytes / 4` は bpp 依存(16bpp: 80 / 24bpp: 120 ワード)。16bpp の値 80 を
+  固定していたため、24bpp では stream writer/reader の 128px バースト = 96 ワードが
+  上限超過、FBR の 106px = 79.5 ワード(非整数)でアドレス計算が破綻し実機でハング。
+  シミュレーションの SDRAM モデルは上限を強制せず、テストは割り切れる小さいバースト値
+  だったため未検出だった。`command_pkg::MAX_BURST_LENGTH / FBR_BURST_PIXELS /
+  STREAM_BURST_PIXELS` として bpp 連動化。
+- テストはプリフィル/期待値をバイト・ピクセル単位の計算に書き換えて bpp 非依存化。
+  **16bpp・24bpp 両構成で 21 テスト全パス**。
+
+### タイミング(24bpp、段階的改善)
+| 段階 | clock_main (実 65MHz) | clock_video (実 74.25MHz) |
+|---|---|---|
+| 単純移植(バイトポインタ) | 62.28 MHz ✗ | 73.69 MHz ✗ |
+| index+side レジスタ分離 | 63.46 MHz ✗ | 74.90 MHz △ |
+| スロット符号化 | 68.79 MHz ✓ | 80.26 MHz ✓ |
+| バースト長修正 | 67.81 MHz ✓ | 77.42 MHz ✓ |
+| **async_fifo full 判定レジスタ化(最終)** | **70.12 MHz ✓** | **80.13 MHz ✓** |
+
+最終構成は SDC 制約(main 70MHz / video 80MHz、マージン付き)も含め全達成。
+async_fifo の write 側は同期済みリードグレイポインタの gray→binary XOR フォールドが
+full/half_full 判定に直結しておりクリティカルパスだったため、変換結果をレジスタ化
+(1 サイクル古い読み出し位置を見るのは full 判定として安全側)。この修正は 16bpp 構成の
+タイミングも改善する(62.5 → 65.3 MHz、実クロック 65MHz を回復)。
+リソース: Logic 57%、BSRAM 19/26(74%)。
+実機で R/G/B/グレーのグラデーション表示により 24bpp 動作を確認
+(16bpp だと 32/64 階調の縞になる)。
+
+### 実機書き込みの注意
+FPGA はウォームブートで再コンフィグできない仕様のため、ファームウェア
+(ビットストリーム埋め込み)書き込み後は **USB 抜き差し(電源断)が必須**。
+ウォームリセット時の `Waiting for FPGA idle timed out` は仕様どおりの動作。
+
+## 10. 残タスク
 
 - さらなる BSRAM 削減余地: async_fifo(4096)、packet_queue / SPI 受信キュー(各 2048)、
   VSG ラインバッファ(2048)。ただし機能上の必要深さの検証が要る。
 - Chisel 版とのサイクル一致(ロックステップ)等価性検証。
 - フルサイズ(2048px 幅 / 720p)でのシミュレーション。
+- 16bpp 構成のタイミングマージン拡大(async_fifo 修正後 65.3MHz / 74.8MHz で実クロックは
+  満たすがマージン僅少。残ワーストは half_full_r → axi4_gate → line_writer の
+  複数モジュール貫通 ready/valid チェーンで、reg slice 挿入が候補)。

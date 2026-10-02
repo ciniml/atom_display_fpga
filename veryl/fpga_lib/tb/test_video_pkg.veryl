@@ -9,6 +9,8 @@ module test_video_pkg {
     const CNT_H_BITS: u32 = video_pkg::COUNT_H_BITS;
     const CNT_V_BITS: u32 = video_pkg::COUNT_V_BITS;
     const ADDR_BITS : u32 = video_pkg::ADDRESS_BITS;
+    // 2 frame banks: 16bpp -> 16MB (24 bits), 24bpp -> 24MB (25 bits)
+    const EXPECTED_ADDR_BITS: u32 = if video_pkg::PIXEL_BYTES == 2 ? 24 : 25;
 
     var cfg     : video_pkg::VideoConfig                      ;
     var vsignal : video_pkg::VideoSignal                      ;
@@ -19,12 +21,12 @@ module test_video_pkg {
         // Derived maximums (sizing basis)
         $assert(CNT_H_BITS == 12);
         $assert(CNT_V_BITS == 12);
-        $assert(ADDR_BITS == 24);
+        $assert(ADDR_BITS == EXPECTED_ADDR_BITS);
 
         // VideoConfig packed width: 9+12+9+9+9+12+10+9 = 79
         $assert($bits(cfg) == 79);
-        $assert($bits(vsignal) == 18);
-        $assert($bits(video) == 19);
+        $assert($bits(vsignal) == video_pkg::PIXEL_BITS + 2);
+        $assert($bits(video) == video_pkg::PIXEL_BITS + 3);
         $assert($bits(mult_cfg) == 8);
 
         // config_value + total_counts on a 720p-shaped timing

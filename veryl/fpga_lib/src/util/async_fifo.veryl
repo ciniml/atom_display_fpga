@@ -61,8 +61,12 @@ pub module async_fifo::<T: type> #(
     var r_index_gray_w : 'w logic<INDEX_BITS>;
 
     let w_index_gray: 'w logic<INDEX_BITS> = bin2gray(w_index);
-    let r_index_sync: 'w logic<INDEX_BITS> = gray2bin(r_index_gray_w);
-    let full        : 'w logic             = (r_index_sync[DepthBits - 1:0] == w_index[DepthBits - 1:0])
+    // Registered gray-to-binary conversion of the synchronized read
+    // pointer: the gray2bin XOR fold feeding the full comparison was the
+    // critical path. The extra cycle of staleness only makes full (and
+    // half_full) conservative, which is safe.
+    var r_index_sync: 'w logic<INDEX_BITS>;
+    let full        : 'w logic = (r_index_sync[DepthBits - 1:0] == w_index[DepthBits - 1:0])
         && (r_index_sync[DepthBits] != w_index[DepthBits]);
 
     unsafe (cdc) {
@@ -108,9 +112,11 @@ pub module async_fifo::<T: type> #(
                 w_index         = '0;
                 r_index_gray_ff = '0;
                 r_index_gray_w  = '0;
+                r_index_sync    = '0;
             } else {
                 r_index_gray_ff = r_index_gray;
                 r_index_gray_w  = r_index_gray_ff;
+                r_index_sync    = gray2bin(r_index_gray_w);
 
                 if i_data.valid && i_data.ready {
                     w_index += 1;

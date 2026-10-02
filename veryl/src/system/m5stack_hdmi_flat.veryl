@@ -12,7 +12,7 @@ pub module m5stack_hdmi_flat (
     // Video clock domain
     io_videoClock      : input  'video clock    ,
     io_videoReset      : input  'video reset    ,
-    io_video_pixelData : output 'video logic<16>,
+    io_video_pixelData : output 'video fpga_lib::video_pkg::PixelType,
     io_video_hSync     : output 'video logic    ,
     io_video_vSync     : output 'video logic    ,
     io_video_dataEnable: output 'video logic    ,
@@ -46,7 +46,7 @@ pub module m5stack_hdmi_flat (
     io_videoClockConfigValid           : output 'main logic    ,
 ) {
     inst spi : fpga_lib::spi_if;
-    inst sdrc: fpga_lib::sdrc_if::<22, 4, 80>;
+    inst sdrc: fpga_lib::sdrc_if::<fpga_lib::video_pkg::SDRC_ADDRESS_BITS, 4, command_pkg::MAX_BURST_LENGTH>;
 
     var video_out: 'video fpga_lib::video_pkg::VideoIO           ;
     var vclk_cfg : 'main  command_pkg::VideoClockConfig;

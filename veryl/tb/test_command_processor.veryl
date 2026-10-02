@@ -63,7 +63,7 @@ module test_command_processor {
     var byte_to_send: logic<8> ;
     var first_flag  : logic    ;
     var pixel_count : u32      ;
-    var expected_px : logic<16>;
+    var expected_px : fpga_lib::video_pkg::PixelType;
     var id_bytes    : logic<32>;
     var got_id      : logic    ;
 
@@ -92,7 +92,7 @@ module test_command_processor {
             clk.next(1);
         }
         $assert     (wr_cmd_valid, "clear command must be issued after reset");
-        $assert     (wr_cmd.do_fill == '1 && wr_cmd.color == 16'h0000, "clear fills with black");
+        $assert     (wr_cmd.do_fill == '1 && wr_cmd.color == '0, "clear fills with black");
         $assert     (wr_cmd.end_x_inclusive == 63 && wr_cmd.end_y_inclusive == 31, "clear covers the whole buffer");
         wr_cmd_ready = '1;
         clk.next    (1);
@@ -151,7 +151,7 @@ module test_command_processor {
         $assert     (wr_cmd_valid, "FILL_RECT must issue a writer command");
         $assert     (wr_cmd.start_x == 10 && wr_cmd.end_x_inclusive == 20, "FILL_RECT x range");
         $assert     (wr_cmd.start_y == 5 && wr_cmd.end_y_inclusive == 8, "FILL_RECT y range");
-        $assert     (wr_cmd.do_fill == '1 && wr_cmd.color == 16'habcd, "FILL_RECT color");
+        $assert     (wr_cmd.do_fill == '1 && wr_cmd.color == command_pkg::rgb565_to_native(16'habcd), "FILL_RECT color");
         wr_cmd_ready = '1;
         clk.next    (1);
         wr_cmd_ready = '0;
@@ -261,7 +261,7 @@ module test_command_processor {
             spi_rx.valid = '0;
             for _i in 0..6 {
                 if writer_data.valid && writer_data.ready {
-                    expected_px = ((16'hd010 + ((pixel_count as 16) * 16'h0101))) as 16;
+                    expected_px = command_pkg::rgb565_to_native((16'hd010 + ((pixel_count as 16) * 16'h0101)) as 16);
                     $assert    (
                         writer_data.payload.pixel_data == expected_px,
                         "WRITE_RAW pixel must be packed big-endian",
@@ -273,7 +273,7 @@ module test_command_processor {
         }
         for _i in 0..20 {
             if writer_data.valid && writer_data.ready {
-                expected_px = ((16'hd010 + ((pixel_count as 16) * 16'h0101))) as 16;
+                expected_px = command_pkg::rgb565_to_native((16'hd010 + ((pixel_count as 16) * 16'h0101)) as 16);
                 $assert    (writer_data.payload.pixel_data == expected_px, "WRITE_RAW pixel must be packed big-endian");
                 pixel_count += 1;
             }
@@ -426,7 +426,7 @@ module test_command_processor {
         reader_data.valid = '1;
         pixel_count       = 0;
         for k in 0..4 {
-            reader_data.payload.pixel_data  = (16'h9a00 + k) as 16;
+            reader_data.payload.pixel_data  = (32'h9a00 + k) as fpga_lib::video_pkg::PixelType;
             reader_data.payload.end_of_line = k == 3;
             for _i in 0..20 {
                 if reader_data.ready {
@@ -440,7 +440,7 @@ module test_command_processor {
         for _i in 0..40 {
             if writer_data.valid && writer_data.ready {
                 $assert    (
-                    writer_data.payload.pixel_data == ((16'h9a00 + (pixel_count as 16)) as 16),
+                    writer_data.payload.pixel_data == ((32'h9a00 + pixel_count) as fpga_lib::video_pkg::PixelType),
                     "COPYRECT pixels pass through in order",
                 );
                 pixel_count += 1;

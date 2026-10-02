@@ -1,8 +1,10 @@
 // Unit test for stream_reader / line_reader with tb_axi4_memory.
-// Geometry: 16x8 pixels (line stride 32 bytes), 16bpp. The test
+// Geometry: 16x8 pixels (line stride 16 * PIXEL_BYTES bytes). The test
 // pre-fills memory through the same AXI interface's write channels
 // (unused by the reader), then reads rectangles forward and backward
 // (the backward path is what COPYRECT uses for overlapping moves).
+// The pre-fill and expected values are computed per byte from the
+// pixel index, so the test works for both 16bpp and 24bpp.
 // SPDX-License-Identifier: BSL-1.0
 
 #[test(test_stream_reader)]
@@ -47,7 +49,29 @@ module test_stream_reader {
         axi  : axi,
     );
 
-    var expected: logic<16>;
+    const PIXEL_BYTES: u32 = video_pkg::PIXEL_BYTES;
+    const FILL_WORDS : u32 = 32 * PIXEL_BYTES / 4; // lines 0..1 = 32 pixels
+
+    // pixel(x, y) = PX_BASE + y*16 + x (linear index; stride = width)
+    function pixel_value (
+        index: input u32,
+    ) -> logic<video_pkg::PIXEL_BITS> {
+        return (32'h00a1_b000 + index) as video_pkg::PIXEL_BITS;
+    }
+
+    // Little-endian pixel bytes laid out contiguously from address 0
+    function fill_byte (
+        byte_addr: input u32,
+    ) -> logic<8> {
+        var px  : logic<video_pkg::PIXEL_BITS>;
+        var lane: u32                         ;
+        px   = pixel_value(byte_addr / PIXEL_BYTES);
+        lane = byte_addr % PIXEL_BYTES;
+        return px[8 * lane+:8];
+    }
+
+    var expected : logic<video_pkg::PIXEL_BITS>;
+    var fill_word: logic<32>                   ;
 
     initial {
         cmd_valid           = '0;
@@ -69,10 +93,10 @@ module test_stream_reader {
         rst.assert (clk);
         clk.next   (2);
 
-        // ---- Pre-fill lines 0..1 (words 0..15): pixel(x,y) = 0xb000 + y*16 + x ----
+        // ---- Pre-fill lines 0..1: pixel(x,y) = PX_BASE + y*16 + x ----
         axi.awvalid = '1;
         axi.aw.addr = 10'h000;
-        axi.aw.len  = 8'd15;
+        axi.aw.len  = (FILL_WORDS - 1) as 8;
         for _i in 0..20 {
             if axi.awready {
                 break;
@@ -83,9 +107,12 @@ module test_stream_reader {
         axi.awvalid = '0;
         axi.wvalid  = '1;
         axi.w.strb  = 4'hf;
-        for w in 0..16 {
-            axi.w.data = (((32'hb000 + w * 2 + 1) << 16) | (32'hb000 + w * 2)) as 32;
-            axi.w.last = w == 15;
+        for w in 0..FILL_WORDS {
+            for b in 0..4 {
+                fill_word[8 * b+:8] = fill_byte(w * 4 + b);
+            }
+            axi.w.data = fill_word;
+            axi.w.last = w == FILL_WORDS - 1;
             for _i in 0..20 {
                 if axi.wready {
                     break;
@@ -129,7 +156,7 @@ module test_stream_reader {
                     clk.next(1);
                 }
                 $assert (s_data.valid, "pixel must arrive");
-                expected = (16'hb000 + row * 16 + 1 + px) as 16;
+                expected = pixel_value(row * 16 + 1 + px);
                 $assert (s_data.payload.pixel_data == expected, "forward read pixel must match");
                 $assert (s_data.payload.end_of_line == (px == 5), "end_of_line on last pixel of each line");
                 clk.next(1);
@@ -166,7 +193,7 @@ module test_stream_reader {
                     clk.next(1);
                 }
                 $assert (s_data.valid, "pixel must arrive (backward)");
-                expected = (16'hb000 + (1 - row) * 16 + 1 + px) as 16;
+                expected = pixel_value((1 - row) * 16 + 1 + px);
                 $assert (s_data.payload.pixel_data == expected, "backward read must deliver line 1 then line 0");
                 clk.next(1);
             }

@@ -61,8 +61,14 @@ pub module stream_reader::<AddressBits: u32, MaxWidth: u32, MaxHeight: u32, Burs
     var line_busy_prev    : logic              ;
     var is_backward       : logic              ;
 
+    // start_x * PIXEL_BYTES without a multiplier (x2, or x3 = x2 + x1)
+    let start_x_bytes: logic<AddressBits> = if PIXEL_BYTES == 2 ?
+        ({command.start_x, 1'b0}) as AddressBits
+    :
+        (({command.start_x, 1'b0}) as AddressBits) + (command.start_x as AddressBits)
+    ;
     let calculated_line_start: logic<AddressBits> = command.address_offset
-        + ((command.start_y * LINE_STRIDE_BYTES) as AddressBits) + (({command.start_x, 1'b0}) as AddressBits);
+        + ((command.start_y * LINE_STRIDE_BYTES) as AddressBits) + start_x_bytes;
 
     assign o_busy          = state != State::s_idle;
     assign o_command_ready = state == State::s_idle;

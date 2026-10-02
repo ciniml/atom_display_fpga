@@ -1,8 +1,10 @@
 // Unit test for stream_writer / line_writer with tb_axi4_memory.
-// Geometry: 16x8 pixels (line stride 32 bytes), 16bpp.
+// Geometry: 16x8 pixels (line stride 16 * PIXEL_BYTES bytes).
 // Verifies fill rect with unaligned (odd) start X including byte
 // strobes, and a streamed pixel write, by reading memory back through
 // the same AXI interface's read channels (unused by the writer).
+// The expected values are computed per byte from the written region,
+// so the test works for both 16bpp and 24bpp.
 // SPDX-License-Identifier: BSL-1.0
 
 #[test(test_stream_writer)]
@@ -53,6 +55,49 @@ module test_stream_writer {
         return (waddr * 4) as 10;
     }
 
+    const PIXEL_BYTES : u32 = video_pkg::PIXEL_BYTES;
+    const STRIDE_BYTES: u32 = 16 * PIXEL_BYTES;
+    const STRIDE_WORDS: u32 = STRIDE_BYTES / 4;
+
+    let fill_color: video_pkg::PixelType = 32'h0000_1234 as video_pkg::PixelType;
+
+    // Streamed pixel p value (16bpp: 0xa100 + p)
+    function stream_pixel (
+        p: input u32,
+    ) -> logic<video_pkg::PIXEL_BITS> {
+        return (32'h00a2_a100 + p) as video_pkg::PIXEL_BITS;
+    }
+
+    // Expected byte of the fill test at byte offset `off` within a
+    // filled line: pixels x = 3..10 hold fill_color, the rest stay 0.
+    function fill_expected_byte (
+        off: input u32,
+    ) -> logic<8> {
+        var lane: u32;
+        if (off >= 3 * PIXEL_BYTES) && (off <: 11 * PIXEL_BYTES) {
+            lane = (off - 3 * PIXEL_BYTES) % PIXEL_BYTES;
+            return fill_color[8 * lane+:8];
+        } else {
+            return 8'h00;
+        }
+    }
+
+    // Expected byte of the streamed-write test at byte offset `off`
+    // within line 4: pixels x = 0..7 hold stream_pixel(x).
+    function stream_expected_byte (
+        off: input u32,
+    ) -> logic<8> {
+        var px  : logic<video_pkg::PIXEL_BITS>;
+        var lane: u32                         ;
+        if off <: 8 * PIXEL_BYTES {
+            px   = stream_pixel(off / PIXEL_BYTES);
+            lane = off % PIXEL_BYTES;
+            return px[8 * lane+:8];
+        } else {
+            return 8'h00;
+        }
+    }
+
     initial {
         cmd_valid                     = '0;
         cmd.address_offset            = '0;
@@ -74,13 +119,13 @@ module test_stream_writer {
         rst.assert (clk);
         clk.next   (2);
 
-        // ---- Fill rect: x=3..10, y=1..2, color 0x1234 ----
+        // ---- Fill rect: x=3..10, y=1..2 ----
         cmd.start_x         = 3;
         cmd.end_x_inclusive = 10;
         cmd.start_y         = 1;
         cmd.end_y_inclusive = 2;
         cmd.do_fill         = '1;
-        cmd.color           = 16'h1234;
+        cmd.color           = fill_color;
         cmd_valid           = '1;
         for _i in 0..10 {
             if cmd_ready {
@@ -101,15 +146,13 @@ module test_stream_writer {
         $assert (!busy, "fill must complete");
         clk.next(2);
 
-        // Line 1 pixels 3..10 occupy bytes 38..53 (words 9..13).
-        // word 9  = bytes 36..39: only 38,39 written -> 0x1234_0000
-        // word 10..12 = fully written -> 0x1234_1234
-        // word 13 = bytes 52..55: only 52,53 written -> 0x0000_1234
-        // Line 2 same pattern at words 17..21.
+        // Read back each filled line in full and verify byte-wise:
+        // pixels 3..10 hold fill_color (partial first/last bus words
+        // exercise the byte strobes), everything else stays 0.
         for row in 0..2 {
             axi.arvalid = '1;
-            axi.ar.addr = read_word_addr(9 + row * 8);
-            axi.ar.len  = 8'd4;
+            axi.ar.addr = read_word_addr((1 + row) * STRIDE_WORDS);
+            axi.ar.len  = (STRIDE_WORDS - 1) as 8;
             for _i in 0..20 {
                 if axi.arready {
                     break;
@@ -118,7 +161,7 @@ module test_stream_writer {
             }
             clk.next   (1);
             axi.arvalid = '0;
-            for beat in 0..5 {
+            for beat in 0..STRIDE_WORDS {
                 for _i in 0..20 {
                     if axi.rvalid {
                         break;
@@ -126,13 +169,12 @@ module test_stream_writer {
                     clk.next(1);
                 }
                 $assert(axi.rvalid, "readback beat must arrive");
-                rword   = axi.r.data;
-                if beat == 0 {
-                    $assert(rword == 32'h1234_0000, "partial first word (odd start X)");
-                } else if beat <= 3 {
-                    $assert(rword == 32'h1234_1234, "full middle words");
-                } else {
-                    $assert(rword == 32'h0000_1234, "partial last word");
+                rword = axi.r.data;
+                for lane in 0..4 {
+                    $assert(
+                        rword[8 * lane+:8] == fill_expected_byte(beat * 4 + lane),
+                        "partial first word (odd start X)",
+                    );
                 }
                 clk.next(1);
             }
@@ -177,7 +219,7 @@ module test_stream_writer {
 
         s_data.valid = '1;
         for p in 0..8 {
-            s_data.payload.pixel_data = (16'ha100 + p) as 16;
+            s_data.payload.pixel_data = stream_pixel(p);
             for _i in 0..40 {
                 if s_data.ready {
                     break;
@@ -198,10 +240,11 @@ module test_stream_writer {
         $assert (!busy, "stream write must complete");
         clk.next(2);
 
-        // Line 4 = words 32..35: {p1,p0} {p3,p2} {p5,p4} {p7,p6}
+        // Read back line 4 in full and verify byte-wise: pixels 0..7
+        // hold stream_pixel(x) in order.
         axi.arvalid = '1;
-        axi.ar.addr = read_word_addr(32);
-        axi.ar.len  = 8'd3;
+        axi.ar.addr = read_word_addr(4 * STRIDE_WORDS);
+        axi.ar.len  = (STRIDE_WORDS - 1) as 8;
         for _i in 0..20 {
             if axi.arready {
                 break;
@@ -210,7 +253,7 @@ module test_stream_writer {
         }
         clk.next   (1);
         axi.arvalid = '0;
-        for beat in 0..4 {
+        for beat in 0..STRIDE_WORDS {
             for _i in 0..20 {
                 if axi.rvalid {
                     break;
@@ -218,10 +261,13 @@ module test_stream_writer {
                 clk.next(1);
             }
             $assert (axi.rvalid);
-            $assert (
-                axi.r.data == ((32'ha101_a100 + (beat * 32'h0002_0002)) as 32),
-                "streamed pixels must land in order",
-            );
+            rword = axi.r.data;
+            for lane in 0..4 {
+                $assert(
+                    rword[8 * lane+:8] == stream_expected_byte(beat * 4 + lane),
+                    "streamed pixels must land in order",
+                );
+            }
             clk.next(1);
         }
 

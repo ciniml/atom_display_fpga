@@ -133,7 +133,12 @@ pub module frame_buffer_reader::<
                     pixel_multiplier_counter = (cfg.scale_x - 1) as 4;
                     reader_command.count     = cfg.pixels_h as COUNT_H_BITS;
                     start_address_y          = (cfg.start_y * LINE_STRIDE_BYTES) as AddressBits;
-                    start_address_x          = ({cfg.start_x, 1'b0}) as AddressBits;
+                    // start_x * PIXEL_BYTES without a multiplier (x2, or x3 = x2 + x1)
+                    start_address_x          = if PIXEL_BYTES == 2 ?
+                        ({cfg.start_x, 1'b0}) as AddressBits
+                    :
+                        (({cfg.start_x, 1'b0}) as AddressBits) + (cfg.start_x as AddressBits)
+                    ;
                     state                    = State::s_decode2;
                 }
                 State::s_decode2: {

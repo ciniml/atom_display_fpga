@@ -1,7 +1,8 @@
 // Unit test for frame_buffer_reader with tb_axi4_memory.
-// Geometry: 16x8 pixels (line stride 32 bytes), 16bpp; memory is
-// pre-filled with pixel(x,y) = 0xc000 + y*16 + x through the write
-// channels of the same AXI interface (unused by the reader).
+// Geometry: 16x8 pixels (line stride 16 * PIXEL_BYTES bytes); memory
+// is pre-filled with pixel(x,y) = PX_BASE + y*16 + x through the write
+// channels of the same AXI interface (unused by the reader). The fill
+// is computed per byte, so the test works for both 16bpp and 24bpp.
 // Verifies windowed frame readout (start offset), start_of_frame /
 // end_of_line flags, trigger/active handshake, and 2x2 scaling by
 // pixel/line repetition.
@@ -47,9 +48,31 @@ module test_frame_buffer_reader {
         axi  : axi,
     );
 
-    var expected: logic<16>;
-    var src_x   : u32      ;
-    var src_y   : u32      ;
+    const PIXEL_BYTES: u32 = video_pkg::PIXEL_BYTES;
+    const FILL_WORDS : u32 = 64 * PIXEL_BYTES / 4; // lines 0..3 = 64 pixels
+
+    // pixel(x, y) = PX_BASE + y*16 + x (linear index; stride = width)
+    function pixel_value (
+        index: input u32,
+    ) -> logic<video_pkg::PIXEL_BITS> {
+        return (32'h00a3_c000 + index) as video_pkg::PIXEL_BITS;
+    }
+
+    // Little-endian pixel bytes laid out contiguously from address 0
+    function fill_byte (
+        byte_addr: input u32,
+    ) -> logic<8> {
+        var px  : logic<video_pkg::PIXEL_BITS>;
+        var lane: u32                         ;
+        px   = pixel_value(byte_addr / PIXEL_BYTES);
+        lane = byte_addr % PIXEL_BYTES;
+        return px[8 * lane+:8];
+    }
+
+    var expected : logic<video_pkg::PIXEL_BITS>;
+    var fill_word: logic<32>                   ;
+    var src_x    : u32                         ;
+    var src_y    : u32                         ;
 
     initial {
         trig         = '0;
@@ -72,10 +95,10 @@ module test_frame_buffer_reader {
         rst.assert (clk);
         clk.next   (2);
 
-        // ---- Pre-fill lines 0..3 (words 0..31) ----
+        // ---- Pre-fill lines 0..3 ----
         axi.awvalid = '1;
         axi.aw.addr = 10'h000;
-        axi.aw.len  = 8'd31;
+        axi.aw.len  = (FILL_WORDS - 1) as 8;
         for _i in 0..20 {
             if axi.awready {
                 break;
@@ -86,9 +109,12 @@ module test_frame_buffer_reader {
         axi.awvalid = '0;
         axi.wvalid  = '1;
         axi.w.strb  = 4'hf;
-        for w in 0..32 {
-            axi.w.data = (((32'hc000 + w * 2 + 1) << 16) | (32'hc000 + w * 2)) as 32;
-            axi.w.last = w == 31;
+        for w in 0..FILL_WORDS {
+            for b in 0..4 {
+                fill_word[8 * b+:8] = fill_byte(w * 4 + b);
+            }
+            axi.w.data = fill_word;
+            axi.w.last = w == FILL_WORDS - 1;
             for _i in 0..20 {
                 if axi.wready {
                     break;
@@ -135,7 +161,7 @@ module test_frame_buffer_reader {
                     clk.next(1);
                 }
                 $assert (s_data.valid, "pixel must arrive");
-                expected = (16'hc000 + (1 + row) * 16 + 1 + px) as 16;
+                expected = pixel_value((1 + row) * 16 + 1 + px);
                 $assert (s_data.payload.pixel_data == expected, "windowed pixel must match memory");
                 $assert (s_data.payload.start_of_frame == (row == 0 && px == 0), "SOF only on the first pixel");
                 $assert (s_data.payload.end_of_line == (px == 3), "EOL on the last pixel of each line");
@@ -175,7 +201,7 @@ module test_frame_buffer_reader {
                 $assert (s_data.valid, "scaled pixel must arrive");
                 src_x    = out_x / 2;
                 src_y    = out_y / 2;
-                expected = (16'hc000 + src_y * 16 + src_x) as 16;
+                expected = pixel_value(src_y * 16 + src_x);
                 $assert (s_data.payload.pixel_data == expected, "2x2 scaled pixels must repeat source pixels");
                 $assert (s_data.payload.end_of_line == (out_x == 5), "EOL on the last repeated pixel");
                 clk.next(1);

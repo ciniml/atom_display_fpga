@@ -254,7 +254,8 @@ module top (
     end
 
     // Swap pins for M5Display
-    localparam int BITS_PER_PIXEL = 16;
+    // Must match veryl/fpga_lib/src/video/video_pkg.veryl PIXEL_BITS.
+    localparam int BITS_PER_PIXEL = 24;
     logic [BITS_PER_PIXEL-1:0] video_data_native;
     logic [23:0] video_data;
     logic [23:0] video_data_sdr;
