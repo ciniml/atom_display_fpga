@@ -1,0 +1,227 @@
+// System test for a WRITE_RAW pixel stream that pauses partway through
+// (the host stopped sending for a while, e.g. waiting on a PSRAM cache
+// write-back between a CPU-driven head and a DMA-driven body).
+//
+// Same small configuration as test_m5stack_hdmi: 64x32 frame buffer
+// (stride 64px), 16x8 visible window, video timing H = 22, V = 12 lines,
+// main clock = 3x video clock.
+//
+// Scenario: CA_SET/RA_SET the whole 16x8 screen, WRITE_RAW RGB565 with a
+// per-pixel position code, pause the byte stream for several frames after
+// a few pixels, send the rest, then capture one full video frame and
+// verify every DE pixel shows the code of its own position.
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+#[test(test_write_raw_pause)]
+#[allow(unassign_variable)]
+module test_write_raw_pause {
+    inst clk : $tb::clock_gen;
+    inst rst: $tb::reset_gen (
+        clk: clk,
+    );
+    inst vclk: $tb::clock_gen;
+    inst vrst: $tb::reset_gen (
+        clk: vclk,
+    );
+
+    inst spi_rx: fpga_lib::stream_if::<fpga_lib::spi_pkg::SpiData>;
+    inst spi_tx: fpga_lib::stream_if::<fpga_lib::spi_pkg::SpiByte>;
+    inst sdrc  : fpga_lib::sdrc_if::<11, 4, 16>;
+
+    var video         : fpga_lib::video_pkg::VideoIO;
+    var data_in_sync  : logic                       ;
+    var trigger       : logic                       ;
+    var proc_busy     : logic                       ;
+    var vclk_cfg_valid: logic                       ;
+    var vclk_cfg      : command_pkg::VideoClockConfig;
+    var dbg_copy_rect : logic                       ;
+
+    inst dut: m5stack_hdmi_core::<13, 11, 64, 32, 64, 16, 8, 8> #(
+        DefaultBackPorchV : 2 ,
+        DefaultPixelsV    : 8 ,
+        DefaultFrontPorchV: 1 ,
+        DefaultPulseWidthV: 1 ,
+        DefaultBackPorchH : 2 ,
+        DefaultPixelsH    : 16,
+        DefaultFrontPorchH: 2 ,
+        DefaultPulseWidthH: 2 ,
+    ) (
+        i_clk                     : clk           ,
+        i_rst                     : rst           ,
+        i_video_clk               : vclk          ,
+        i_video_rst               : vrst          ,
+        i_spi_receive             : spi_rx        ,
+        o_spi_send                : spi_tx        ,
+        o_video                   : video         ,
+        o_data_in_sync            : data_in_sync  ,
+        o_trigger                 : trigger       ,
+        o_processor_is_busy       : proc_busy     ,
+        sdrc                      : sdrc          ,
+        o_video_clock_config_valid: vclk_cfg_valid,
+        o_video_clock_config      : vclk_cfg      ,
+        o_dbg_copy_rect           : dbg_copy_rect ,
+    );
+
+    inst memory: fpga_lib::tb_sim_sdrc::<11, 4, 32, 16> #(
+        MemWords: 2048,
+    ) (
+        i_clk: clk ,
+        i_rst: rst ,
+        sdrc : sdrc,
+    );
+
+    // Byte stream: CA_SET (5) + RA_SET (5) + WRITE_RAW (1) + 128 px * 2
+    const HEADER_BYTES: u32 = 11;
+    const TOTAL_BYTES : u32 = HEADER_BYTES + 128 * 2;
+    // Pause after this many pixel bytes, for this many video cycles
+    const PAUSE_AFTER : u32 = 8;
+    const PAUSE_CYCLES: u32 = 2000;
+
+    var byte_to_send: logic<8> ;
+    var first_flag  : logic    ;
+    var p           : u32      ;
+    var code        : logic<16>;
+    var de_count    : u32      ;
+    var x           : u32      ;
+    var y           : u32      ;
+    var expected    : fpga_lib::video_pkg::PixelType;
+    var mismatches  : u32      ;
+    var seen_vsync  : logic    ;
+    var frame_done  : logic    ;
+
+    // RGB565 position code of pixel (x, y): R = x, G = y, B = 1
+    function position_code (
+        px: input u32,
+        py: input u32,
+    ) -> logic<16> {
+        return {px[4:0], py[5:0], 5'd1};
+    }
+
+    initial {
+        spi_rx.valid         = '0;
+        spi_rx.payload.first = '0;
+        spi_rx.payload.data  = '0;
+        spi_tx.ready         = '1;
+        rst.assert          (clk);
+        vrst.assert         (vclk);
+        clk.next            (4);
+        vclk.next           (2);
+
+        for _i in 0..30000 {
+            vclk.next(1);
+            clk.next (3);
+            if !proc_busy {
+                break;
+            }
+        }
+        $assert (!proc_busy, "frame buffer clear must finish");
+        for _i in 0..2000 {
+            vclk.next(1);
+            clk.next (3);
+            if data_in_sync {
+                break;
+            }
+        }
+        $assert(data_in_sync, "video stream must be in sync before drawing");
+
+        for b in 0..TOTAL_BYTES {
+            first_flag = (b == 0) || (b == 5) || (b == 10);
+            case b {
+                0      : byte_to_send = 8'h2a; // CA_SET x = 0..15
+                1      : byte_to_send = 8'h00;
+                2      : byte_to_send = 8'h00;
+                3      : byte_to_send = 8'h00;
+                4      : byte_to_send = 8'd15;
+                5      : byte_to_send = 8'h2b; // RA_SET y = 0..7
+                6      : byte_to_send = 8'h00;
+                7      : byte_to_send = 8'h00;
+                8      : byte_to_send = 8'h00;
+                9      : byte_to_send = 8'd7;
+                10     : byte_to_send = 8'h42; // WRITE_RAW RGB565
+                default: {
+                    p            = (b - HEADER_BYTES) / 2;
+                    code         = position_code(p % 16, p / 16);
+                    byte_to_send = if (b - HEADER_BYTES) % 2 == 0 ? code[15:8] : code[7:0];
+                }
+            }
+            if b == HEADER_BYTES + PAUSE_AFTER {
+                // The host stops sending in the middle of the pixel data
+                for _i in 0..PAUSE_CYCLES {
+                    vclk.next(1);
+                    clk.next (3);
+                }
+            }
+            spi_rx.valid         = '1;
+            spi_rx.payload.first = first_flag;
+            spi_rx.payload.data  = byte_to_send;
+            for _i in 0..50 {
+                if spi_rx.ready {
+                    break;
+                }
+                vclk.next(1);
+                clk.next (3);
+            }
+            $assert     (spi_rx.ready, "SPI byte must be accepted");
+            clk.next    (1);
+            spi_rx.valid = '0;
+            vclk.next   (2);
+            clk.next    (6);
+        }
+        for _i in 0..20000 {
+            vclk.next(1);
+            clk.next (3);
+            if !proc_busy {
+                break;
+            }
+        }
+        $assert (!proc_busy, "WRITE_RAW must finish");
+
+        // Let the video pipeline run a few frames
+        for _i in 0..1000 {
+            vclk.next(1);
+            clk.next (3);
+        }
+
+        // Capture one full frame from the end of a vsync pulse
+        seen_vsync = '0;
+        for _i in 0..2000 {
+            if video.v_sync {
+                seen_vsync = '1;
+            }
+            if seen_vsync && !video.v_sync {
+                break;
+            }
+            vclk.next(1);
+            clk.next (3);
+        }
+        $assert(seen_vsync, "vsync must occur");
+
+        de_count   = 0;
+        mismatches = 0;
+        frame_done = '0;
+        for _i in 0..600 {
+            if video.data_enable {
+                x        = de_count % 16;
+                y        = de_count / 16;
+                expected = command_pkg::rgb565_to_native(position_code(x, y));
+                if video.pixel_data != expected {
+                    if mismatches == 0 {
+                        $display("first mismatch at (%d, %d): got %h, expected %h", x, y, video.pixel_data, expected);
+                    }
+                    mismatches += 1;
+                }
+                de_count += 1;
+                if de_count == 128 {
+                    frame_done = '1;
+                    break;
+                }
+            }
+            vclk.next(1);
+            clk.next (3);
+        }
+        $display("data_in_sync=%d mismatches=%d", data_in_sync, mismatches);
+        $assert (frame_done, "a full 16x8 frame must be displayed");
+        $assert (mismatches == 0, "every pixel must be displayed at its own position");
+        $finish();
+    }
+}

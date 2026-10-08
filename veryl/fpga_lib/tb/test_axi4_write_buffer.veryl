@@ -1,0 +1,138 @@
+// Unit test for axi4_write_buffer (axi/axi4_write_buffer.veryl): AW is
+// held until every W beat of the burst is buffered, then the burst is
+// forwarded with its beats back to back; AR/R and B pass through.
+// SPDX-License-Identifier: BSL-1.0
+
+#[test(test_axi4_write_buffer)]
+#[allow(unassign_variable)]
+module test_axi4_write_buffer {
+    inst clk: $tb::clock_gen;
+    inst rst: $tb::reset_gen (
+        clk: clk,
+    );
+
+    inst m_axi: axi4_if::<16, 32>;
+    inst s_axi: axi4_if::<16, 32>;
+
+    inst dut: axi4_write_buffer::<16, 32> #(
+        DepthBits: 3,
+    ) (
+        i_clk: clk  ,
+        i_rst: rst  ,
+        i_axi: m_axi,
+        o_axi: s_axi,
+    );
+
+    var beats: u32;
+
+    initial {
+        m_axi.arvalid = '0;
+        m_axi.ar.addr = '0;
+        m_axi.ar.len  = '0;
+        m_axi.rready  = '0;
+        m_axi.awvalid = '0;
+        m_axi.aw.addr = '0;
+        m_axi.aw.len  = '0;
+        m_axi.wvalid  = '0;
+        m_axi.w.data  = '0;
+        m_axi.w.strb  = '0;
+        m_axi.w.last  = '0;
+        m_axi.bready  = '0;
+        s_axi.arready = '1;
+        s_axi.awready = '1;
+        s_axi.rvalid  = '0;
+        s_axi.r.data  = '0;
+        s_axi.r.resp  = axi4_pkg::Axi4Resp::okay;
+        s_axi.r.last  = '0;
+        s_axi.wready  = '1;
+        s_axi.bvalid  = '0;
+        s_axi.b.resp  = axi4_pkg::Axi4Resp::okay;
+        rst.assert   (clk);
+
+        // AW of a 4-beat burst arrives before any data
+        m_axi.awvalid = '1;
+        m_axi.aw.addr = 16'h0100;
+        m_axi.aw.len  = 8'd3;
+        $assert      (m_axi.awready == '1, "AW is accepted into the hold register");
+        clk.next     (1);
+        m_axi.awvalid = '0;
+
+        // Only 3 of the 4 beats arrive, then the source stalls
+        for i in 0..3 {
+            m_axi.wvalid = '1;
+            m_axi.w.data = 32'ha000 + i;
+            m_axi.w.strb = 4'hf;
+            $assert     (m_axi.wready == '1, "W beats are buffered");
+            clk.next    (1);
+        }
+        m_axi.wvalid = '0;
+        clk.next    (10);
+        $assert     (s_axi.awvalid == '0, "AW must not be forwarded before the whole burst is buffered");
+        $assert     (s_axi.wvalid == '0, "no W beat leaves before AW");
+
+        // The last beat arrives: the burst is forwarded
+        m_axi.wvalid = '1;
+        m_axi.w.data = 32'ha003;
+        m_axi.w.last = '1;
+        clk.next    (1);
+        m_axi.wvalid = '0;
+        m_axi.w.last = '0;
+        for _i in 0..10 {
+            if s_axi.awvalid {
+                break;
+            }
+            clk.next(1);
+        }
+        $assert (s_axi.awvalid == '1, "AW is forwarded once the burst is buffered");
+        $assert (s_axi.aw.addr == 16'h0100 && s_axi.aw.len == 8'd3);
+        clk.next(1);
+        $assert (s_axi.awvalid == '0, "AW valid clears after the handshake");
+
+        // All 4 beats stream out back to back, in order
+        beats = 0;
+        for i in 0..4 {
+            $assert (s_axi.wvalid == '1, "W beats leave back to back");
+            $assert (s_axi.w.data == 32'ha000 + i, "W beats keep their order");
+            beats += 1;
+            clk.next(1);
+        }
+        $assert (s_axi.wvalid == '0, "nothing beyond the burst is sent");
+        $assert (beats == 4);
+
+        // A single-beat burst whose data arrived before its AW
+        m_axi.wvalid = '1;
+        m_axi.w.data = 32'hb000;
+        clk.next    (1);
+        m_axi.wvalid  = '0;
+        m_axi.awvalid = '1;
+        m_axi.aw.addr = 16'h0200;
+        m_axi.aw.len  = 8'd0;
+        clk.next     (1);
+        m_axi.awvalid = '0;
+        for _i in 0..10 {
+            if s_axi.awvalid {
+                break;
+            }
+            clk.next(1);
+        }
+        $assert (s_axi.awvalid == '1 && s_axi.aw.addr == 16'h0200, "single-beat burst is forwarded");
+        clk.next(1);
+        $assert (s_axi.wvalid == '1 && s_axi.w.data == 32'hb000, "its beat follows");
+        clk.next(1);
+        $assert (s_axi.wvalid == '0);
+
+        // B and AR/R pass through combinationally
+        s_axi.bvalid  = '1;
+        m_axi.bready  = '1;
+        $assert      (m_axi.bvalid == '1 && s_axi.bready == '1, "B passes through");
+        m_axi.arvalid = '1;
+        m_axi.ar.addr = 16'h0300;
+        $assert      (s_axi.arvalid == '1 && s_axi.ar.addr == 16'h0300, "AR passes through");
+        s_axi.rvalid  = '1;
+        s_axi.r.data  = 32'hcafe_beef;
+        m_axi.rready  = '1;
+        $assert      (m_axi.rvalid == '1 && m_axi.r.data == 32'hcafe_beef && s_axi.rready == '1, "R passes through");
+
+        $finish();
+    }
+}

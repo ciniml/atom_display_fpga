@@ -1,0 +1,114 @@
+// axi4_write_buffer.veryl
+// Holds each AXI4 write burst until all of its W beats are buffered, then
+// forwards AW and streams the W beats back to back.
+//
+// A master that issues AW before its data is ready (the line writer does,
+// to overlap address and data) makes a downstream arbiter sit in the
+// write-data phase for as long as the data source stalls, starving the
+// other masters. Placing this buffer in front of the arbiter bounds the
+// bus occupancy of every write burst to its length. AR/R and B pass
+// through unchanged.
+//
+// The W FIFO must hold the longest burst: (1 << DepthBits) + 1 beats
+// >= AWLEN + 1, otherwise the burst is never forwarded.
+// SPDX-License-Identifier: BSL-1.0
+
+pub module axi4_write_buffer::<AddressBits: u32, DataBits: u32> #(
+    param DepthBits: u32 = 7,
+) (
+    i_clk: input   clock                                   ,
+    i_rst: input   reset                                   ,
+    i_axi: modport axi4_if::<AddressBits, DataBits>::slave ,
+    o_axi: modport axi4_if::<AddressBits, DataBits>::master,
+) {
+    const COUNT_BITS: u32 = DepthBits + 1;
+    // Wide enough for both the FIFO count and AWLEN (8 bits)
+    const CMP_BITS: u32 = if COUNT_BITS >: 9 ? COUNT_BITS : 9;
+
+    // ---- Read channels and write response pass through ----
+    assign o_axi.arvalid = i_axi.arvalid;
+    assign o_axi.ar      = i_axi.ar;
+    assign i_axi.arready = o_axi.arready;
+    assign i_axi.rvalid  = o_axi.rvalid;
+    assign i_axi.r       = o_axi.r;
+    assign o_axi.rready  = i_axi.rready;
+    assign i_axi.bvalid  = o_axi.bvalid;
+    assign i_axi.b       = o_axi.b;
+    assign o_axi.bready  = i_axi.bready;
+
+    // ---- W FIFO ----
+    inst w_enq: stream_if::<axi4_pkg::Axi4W::<DataBits>>;
+    inst w_deq: stream_if::<axi4_pkg::Axi4W::<DataBits>>;
+
+    var w_count: logic<COUNT_BITS>;
+
+    inst u_w_fifo: sync_fifo::<axi4_pkg::Axi4W::<DataBits>> #(
+        DepthBits: DepthBits,
+    ) (
+        i_clk  : i_clk  ,
+        i_rst  : i_rst  ,
+        i_data : w_enq  ,
+        o_data : w_deq  ,
+        o_count: w_count,
+    );
+
+    assign w_enq.valid   = i_axi.wvalid;
+    assign w_enq.payload = i_axi.w;
+    assign i_axi.wready  = w_enq.ready;
+
+    // ---- AW hold and burst forwarding ----
+    var aw_held_valid  : logic                          ;
+    var aw_held        : axi4_pkg::Axi4A::<AddressBits>;
+    var aw_out_valid   : logic                          ;
+    var transferring   : logic                          ;
+    var beats_remaining: logic<8>                       ;
+
+    // While no burst is being forwarded, the beats at the head of the W
+    // FIFO belong to the held AW, so the FIFO count tells whether the
+    // whole burst has arrived.
+    let burst_buffered: logic = (w_count as CMP_BITS) >: (aw_held.len as CMP_BITS);
+
+    assign i_axi.awready = !aw_held_valid;
+    assign o_axi.awvalid = aw_out_valid;
+    assign o_axi.aw      = aw_held;
+
+    assign o_axi.wvalid = transferring && w_deq.valid;
+    assign o_axi.w      = w_deq.payload;
+    assign w_deq.ready  = transferring && o_axi.wready;
+
+    always_ff {
+        if_reset {
+            aw_held_valid   = '0;
+            aw_out_valid    = '0;
+            transferring    = '0;
+            beats_remaining = '0;
+        } else {
+            if i_axi.awvalid && i_axi.awready {
+                aw_held_valid = '1;
+            }
+            if aw_held_valid && !aw_out_valid && !transferring && burst_buffered {
+                aw_out_valid = '1;
+            }
+            if aw_out_valid && o_axi.awready {
+                aw_out_valid    = '0;
+                aw_held_valid   = '0;
+                transferring    = '1;
+                beats_remaining = aw_held.len;
+            }
+            if transferring && w_deq.valid && o_axi.wready {
+                if beats_remaining == '0 {
+                    transferring = '0;
+                } else {
+                    beats_remaining -= 1;
+                }
+            }
+        }
+    }
+
+    // AW payload register (no reset, like Chisel Reg)
+    always_ff {
+        if i_axi.awvalid && i_axi.awready {
+            aw_held = i_axi.aw;
+        }
+    }
+}

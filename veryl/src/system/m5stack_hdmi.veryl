@@ -137,6 +137,7 @@ pub module m5stack_hdmi_core::<
     //      2 = stream reader (RO); lower index = higher priority ----
     inst demux_in : fpga_lib::axi4_if::<AddressBits, 32> [3];
     inst wr_axi   : fpga_lib::axi4_if::<AddressBits, 32>;
+    inst wr_buf   : fpga_lib::axi4_if::<AddressBits, 32>;
     inst rd_axi   : fpga_lib::axi4_if::<AddressBits, 32>;
     inst demux_out: fpga_lib::axi4_if::<AddressBits, 32>;
     inst mem_axi  : fpga_lib::axi4_if::<AddressBits, 32>;
@@ -158,6 +159,23 @@ pub module m5stack_hdmi_core::<
     );
     inst u_wr_read_tieoff: fpga_lib::axi4_read_tieoff::<AddressBits, 32> (
         axi: wr_axi,
+    );
+
+    // Hand each write burst to the arbiter only once all of its data is
+    // buffered. The writer issues AW as soon as one pixel is available;
+    // without this, a pause in the pixel source (e.g. the host stalling
+    // mid WRITE_RAW) would hold the arbiter in the write-data phase and
+    // starve the frame buffer reader, so the video stream re-syncs late
+    // and the whole picture is displayed shifted.
+    const WR_BUFFER_DEPTH_BITS: u32 = $clog2(MaxBurstLength);
+
+    inst u_wr_buffer: fpga_lib::axi4_write_buffer::<AddressBits, 32> #(
+        DepthBits: WR_BUFFER_DEPTH_BITS,
+    ) (
+        i_clk: i_clk ,
+        i_rst: i_rst ,
+        i_axi: wr_axi,
+        o_axi: wr_buf,
     );
 
     var reader_data_valid  : 'main logic                           ;
@@ -193,7 +211,7 @@ pub module m5stack_hdmi_core::<
         i_clk   : i_clk           ,
         i_rst   : i_rst           ,
         i_enable: enable_fb_access,
-        i_axi   : wr_axi          ,
+        i_axi   : wr_buf          ,
         o_axi   : demux_in[1]     ,
     );
 
