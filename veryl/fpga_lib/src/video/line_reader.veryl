@@ -183,7 +183,13 @@ pub module line_reader::<AddressBits: u32, MaxWidth: u32, BurstPixels: u32, MaxB
     assign o_command_ready = state == State::s_idle;
     assign o_busy          = state != State::s_idle;
 
-    let can_input_data: logic = !realign_full && ((data_words_remaining >: '0) || (issued_data_words_remaining >: '0));
+    // Only accept R data against the current burst's counter. Accepting it
+    // while the next burst's length is still in issued_data_words_remaining
+    // (as the Chisel original did) lets the decrement below override the
+    // "move issued length" assignment in the same cycle, underflowing
+    // data_words_remaining so the line never completes. Costs one idle
+    // cycle per burst.
+    let can_input_data: logic = !realign_full && (data_words_remaining >: '0);
     assign r_deq.ready = (state == State::s_running) && can_input_data;
 
     always_ff {

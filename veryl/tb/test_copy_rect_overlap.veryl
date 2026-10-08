@@ -1,0 +1,158 @@
+// System test for COPYRECT with a small horizontal overlap (source and
+// destination on the same line, shifted right by a few pixels).
+//
+// Real-hardware stride and burst sizes (2048px stride, 128-pixel stream
+// bursts, 160-pixel frame buffer reader bursts, 120-word SDRC bursts at
+// 24bpp) and a 640-pixel-wide video output so the frame buffer reader
+// competes for the SDRAM like on the hardware (main:video clock = 5:2,
+// close to 65 MHz : 27 MHz). Sweeps the source x and the shift amount
+// over 480-pixel single-line copies, which hung on the hardware for
+// some positions (e.g. x=10..489 -> 11).
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+#[test(test_copy_rect_overlap)]
+#[allow(unassign_variable)]
+module test_copy_rect_overlap {
+    inst clk : $tb::clock_gen;
+    inst rst: $tb::reset_gen (
+        clk: clk,
+    );
+    inst vclk: $tb::clock_gen;
+    inst vrst: $tb::reset_gen (
+        clk: vclk,
+    );
+
+    inst spi_rx: fpga_lib::stream_if::<fpga_lib::spi_pkg::SpiData>;
+    inst spi_tx: fpga_lib::stream_if::<fpga_lib::spi_pkg::SpiByte>;
+    inst sdrc  : fpga_lib::sdrc_if::<18, 4, 120>;
+
+    var video         : fpga_lib::video_pkg::VideoIO;
+    var data_in_sync  : logic                       ;
+    var trigger       : logic                       ;
+    var proc_busy     : logic                       ;
+    var vclk_cfg_valid: logic                       ;
+    var vclk_cfg      : command_pkg::VideoClockConfig;
+    var dbg_copy_rect : logic                       ;
+
+    inst dut: m5stack_hdmi_core::<20, 18, 2048, 32, 64, 120, 128, 160> #(
+        DefaultBackPorchV : 3  ,
+        DefaultPixelsV    : 32 ,
+        DefaultFrontPorchV: 1  ,
+        DefaultPulseWidthV: 2  ,
+        DefaultBackPorchH : 80 ,
+        DefaultPixelsH    : 640,
+        DefaultFrontPorchH: 16 ,
+        DefaultPulseWidthH: 64 ,
+    ) (
+        i_clk                     : clk           ,
+        i_rst                     : rst           ,
+        i_video_clk               : vclk          ,
+        i_video_rst               : vrst          ,
+        i_spi_receive             : spi_rx        ,
+        o_spi_send                : spi_tx        ,
+        o_video                   : video         ,
+        o_data_in_sync            : data_in_sync  ,
+        o_trigger                 : trigger       ,
+        o_processor_is_busy       : proc_busy     ,
+        sdrc                      : sdrc          ,
+        o_video_clock_config_valid: vclk_cfg_valid,
+        o_video_clock_config      : vclk_cfg      ,
+        o_dbg_copy_rect           : dbg_copy_rect ,
+    );
+
+    inst memory: fpga_lib::tb_sim_sdrc::<18, 4, 32, 120> #(
+        MemWords: 65536,
+    ) (
+        i_clk: clk ,
+        i_rst: rst ,
+        sdrc : sdrc,
+    );
+
+    var byte_to_send: logic<8>;
+    var first_flag  : logic   ;
+    var sx          : u32     ;
+    var ex          : u32     ;
+    var dx          : u32     ;
+    var hung        : logic   ;
+    var copies      : u32     ;
+
+    initial {
+        spi_rx.valid         = '0;
+        spi_rx.payload.first = '0;
+        spi_rx.payload.data  = '0;
+        spi_tx.ready         = '1;
+        rst.assert          (clk);
+        vrst.assert         (vclk);
+        clk.next            (4);
+        vclk.next           (2);
+
+        for _i in 0..200000 {
+            vclk.next(2);
+            clk.next (5);
+            if !proc_busy {
+                break;
+            }
+        }
+        $assert (!proc_busy, "frame buffer clear must finish");
+        $display("clear done");
+
+        hung   = '0;
+        copies = 0;
+        // Source x = 8..23, shift right by 1..4 pixels, line y=16
+        for c in 0..64 {
+            sx         = 8 + c / 4;
+            ex         = sx + 479;
+            dx         = sx + 1 + c % 4;
+            first_flag = '1;
+            for k in 0..13 {
+                case k {
+                    0      : byte_to_send = 8'h23; // COPYRECT
+                    1      : byte_to_send = (sx >> 8) as 8;
+                    2      : byte_to_send = sx as 8;
+                    3      : byte_to_send = 8'h00;
+                    4      : byte_to_send = 8'd16;
+                    5      : byte_to_send = (ex >> 8) as 8;
+                    6      : byte_to_send = ex as 8;
+                    7      : byte_to_send = 8'h00;
+                    8      : byte_to_send = 8'd16;
+                    9      : byte_to_send = (dx >> 8) as 8;
+                    10     : byte_to_send = dx as 8;
+                    11     : byte_to_send = 8'h00;
+                    default: byte_to_send = 8'd16;
+                }
+                spi_rx.valid         = '1;
+                spi_rx.payload.first = first_flag;
+                spi_rx.payload.data  = byte_to_send;
+                first_flag           = '0;
+                for _i in 0..50 {
+                    if spi_rx.ready {
+                        break;
+                    }
+                    vclk.next(2);
+                    clk.next (5);
+                }
+                $assert     (spi_rx.ready, "SPI byte must be accepted");
+                clk.next    (1);
+                spi_rx.valid = '0;
+                vclk.next   (1);
+                clk.next    (3);
+            }
+            for _i in 0..100000 {
+                vclk.next(2);
+                clk.next (5);
+                if !proc_busy {
+                    break;
+                }
+            }
+            if proc_busy {
+                $display("HANG: copy (%d..%d) -> %d", sx, ex, dx);
+                hung = '1;
+                break;
+            }
+            copies += 1;
+        }
+        $display("copies completed: %d", copies);
+        $assert (!hung, "every COPYRECT must finish");
+        $finish();
+    }
+}
