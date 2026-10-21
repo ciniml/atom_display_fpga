@@ -223,8 +223,14 @@ pub module line_writer::<AddressBits: u32, MaxWidth: u32, BurstPixels: u32, MaxB
                 State::s_running: {
                     // Generate burst addresses; wait until data is
                     // available so the SDRC-side burst never starves.
+                    // Data already taken into the realignment buffer also counts:
+                    // the pixel input below does not wait for the AW channel, so
+                    // the last pixel of a transfer can be accepted while the
+                    // previous AW is still blocked; with i_data.valid gone for
+                    // good the burst would otherwise never be issued.
                     if (!aw_valid || axi.awready) && (address_words_remaining >: '0)
-                        && (issued_data_words_remaining == '0) && (command.do_fill || i_data.valid) {
+                        && (issued_data_words_remaining == '0)
+                        && (command.do_fill || i_data.valid || (realign_buffer_valid != '0)) {
                         aw_addr  = next_address;
                         aw_valid = '1;
                         if address_words_remaining <: (WRITE_BURST_WORDS as WORDS_BITS) {

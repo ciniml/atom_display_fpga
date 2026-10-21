@@ -1,0 +1,137 @@
+// Unit test for stream_writer / line_writer: the last pixel of a transfer
+// arrives while the previous line's AW is still blocked by the AXI slave.
+//
+// Two 1-pixel lines (a 1x2 WRITE_RAW). The testbench is the AXI slave and
+// holds AWREADY low until both pixels have been accepted, then releases it.
+// The pixel input of line_writer does not wait for the AW channel, so the
+// second pixel is taken into the realignment buffer while its AW cannot be
+// issued yet; once the pixel stream goes idle the AW must still be issued
+// from the buffered data, otherwise the transfer never completes (the
+// ModuleDisplay "busy forever after a 1-px-wide WRITE_RAW" hang).
+// SPDX-License-Identifier: BSL-1.0
+
+#[test(test_line_writer_last_pixel)]
+#[allow(unassign_variable)]
+module test_line_writer_last_pixel {
+    inst clk: $tb::clock_gen;
+    inst rst: $tb::reset_gen (
+        clk: clk,
+    );
+
+    inst axi   : axi4_if::<10, 32>;
+    inst s_data: stream_if::<video_pkg::VideoSignal>;
+
+    var cmd_valid: logic                                      ;
+    var cmd_ready: logic                                      ;
+    var cmd      : video_pkg::StreamWriterCommand::<10, 16, 8>;
+    var busy     : logic                                      ;
+
+    var s_data_ready: logic;
+    assign s_data.ready = s_data_ready;
+
+    inst dut: stream_writer::<10, 16, 8, 8, 16> (
+        i_clk          : clk           ,
+        i_rst          : rst           ,
+        i_command_valid: cmd_valid     ,
+        o_command_ready: cmd_ready     ,
+        i_command      : cmd           ,
+        i_data_valid   : s_data.valid  ,
+        o_data_ready   : s_data_ready  ,
+        i_data         : s_data.payload,
+        axi            : axi           ,
+        o_busy         : busy          ,
+    );
+
+    var aw_count: u32;
+    var w_count : u32;
+    var px_sent : u32;
+
+    initial {
+        // AXI slave side: W always accepted, AW blocked, no write response
+        // (line_writer does not wait for B)
+        axi.awready = '0;
+        axi.wready  = '1;
+        axi.bvalid  = '0;
+        axi.b.resp  = axi4_pkg::Axi4Resp::okay;
+        axi.arready = '0;
+        axi.rvalid  = '0;
+        axi.r.data  = '0;
+        axi.r.resp  = axi4_pkg::Axi4Resp::okay;
+        axi.r.last  = '0;
+
+        cmd_valid              = '0;
+        cmd.address_offset     = '0;
+        cmd.start_x            = 4;
+        cmd.end_x_inclusive    = 4;
+        cmd.start_y            = 0;
+        cmd.end_y_inclusive    = 1;
+        cmd.do_fill            = '0;
+        cmd.color              = '0;
+        s_data.valid                  = '0;
+        s_data.payload.pixel_data     = '0;
+        s_data.payload.start_of_frame = '0;
+        s_data.payload.end_of_line    = '0;
+
+        rst.assert(clk);
+        clk.next  (2);
+
+        cmd_valid = '1;
+        for _i in 0..10 {
+            if cmd_ready {
+                break;
+            }
+            clk.next(1);
+        }
+        $assert  (cmd_ready, "command must be accepted");
+        clk.next (1);
+        cmd_valid = '0;
+
+        // Feed the two pixels, each held until accepted
+        aw_count = 0;
+        w_count  = 0;
+        px_sent  = 0;
+        for p in 0..2 {
+            s_data.valid              = '1;
+            s_data.payload.pixel_data = (32'h0012_3400 + p) as video_pkg::PIXEL_BITS;
+            for _i in 0..50 {
+                if s_data.ready {
+                    break;
+                }
+                if axi.wvalid && axi.wready {
+                    w_count += 1;
+                }
+                clk.next(1);
+            }
+            $assert(s_data.ready, "pixel must be accepted");
+            if axi.wvalid && axi.wready {
+                w_count += 1;
+            }
+            clk.next    (1);
+            s_data.valid = '0;
+            px_sent      += 1;
+        }
+        $display("both pixels accepted: awvalid=%d (AW still blocked)", axi.awvalid);
+        $assert(axi.awvalid, "the first line's AW must still be pending");
+
+        // Pixel stream is now idle for good; release the AW channel
+        clk.next   (4);
+        axi.awready = '1;
+        for _i in 0..200 {
+            if axi.awvalid && axi.awready {
+                aw_count += 1;
+            }
+            if axi.wvalid && axi.wready {
+                w_count += 1;
+            }
+            clk.next(1);
+            if !busy {
+                break;
+            }
+        }
+        $display("busy=%d aw=%d w=%d", busy, aw_count, w_count);
+        $assert (aw_count == 2, "both lines must issue their AW");
+        $assert (w_count == 2, "both lines must issue their W beat");
+        $assert (!busy, "the writer must finish once the AW channel is released");
+        $finish();
+    }
+}
