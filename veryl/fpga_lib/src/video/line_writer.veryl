@@ -39,6 +39,7 @@ pub module line_writer::<AddressBits: u32, MaxWidth: u32, BurstPixels: u32, MaxB
     enum State: logic<2> {
         s_idle,
         s_decode,
+        s_setup,
         s_running,
     }
     var state: State;
@@ -55,11 +56,17 @@ pub module line_writer::<AddressBits: u32, MaxWidth: u32, BurstPixels: u32, MaxB
     ;
     let bytes_to_transfer    : logic<BYTES_BITS>  = ({1'b0 repeat BYTES_BITS - 2, command.start_address[1:0]})
         + count_bytes;
-    let is_last_partial_write: logic              = (bytes_to_transfer & 3) != '0;
-    let words_to_transfer    : logic<WORDS_BITS>  = ((bytes_to_transfer + 3) >> 2) as WORDS_BITS;
+    var bytes_to_transfer_q  : logic<BYTES_BITS>  ;
+    // From the registered byte count (s_setup), splitting the adder chain
+    // start_address/count -> bytes -> words over two cycles
+    let is_last_partial_write: logic              = (bytes_to_transfer_q & 3) != '0;
+    let words_to_transfer    : logic<WORDS_BITS>  = ((bytes_to_transfer_q + 3) >> 2) as WORDS_BITS;
 
     var next_address               : logic<AddressBits> ;
     var is_last_partial_q          : logic              ;
+    // address_words_remaining == 0, kept as a register so the W output
+    // condition below does not include a wide zero compare
+    var all_bursts_issued          : logic              ;
     var address_words_remaining    : logic<WORDS_BITS>  ;
     var data_words_remaining       : logic<WORDS_BITS>  ;
     var issued_data_words_remaining: logic<WORDS_BITS>  ;
@@ -171,6 +178,8 @@ pub module line_writer::<AddressBits: u32, MaxWidth: u32, BurstPixels: u32, MaxB
             state                       = State::s_idle;
             command                     = 0 as video_pkg::LineWriterCommand::<AddressBits, MaxWidth>;
             next_address                = '0;
+            bytes_to_transfer_q         = '0;
+            all_bursts_issued           = '0;
             address_words_remaining     = '0;
             data_words_remaining        = '0;
             issued_data_words_remaining = '0;
@@ -204,6 +213,10 @@ pub module line_writer::<AddressBits: u32, MaxWidth: u32, BurstPixels: u32, MaxB
                     }
                 }
                 State::s_decode: {
+                    bytes_to_transfer_q = bytes_to_transfer;
+                    state               = State::s_setup;
+                }
+                State::s_setup: {
                     pixels_remaining      = command.count;
                     realign_buffer_valid = '0;
                     in_slot              = initial_in_slot;
@@ -215,6 +228,7 @@ pub module line_writer::<AddressBits: u32, MaxWidth: u32, BurstPixels: u32, MaxB
                     // channel's enable cone.
                     is_last_partial_q           = is_last_partial_write;
                     address_words_remaining     = words_to_transfer;
+                    all_bursts_issued           = words_to_transfer == '0;
                     data_words_remaining        = '0;
                     issued_data_words_remaining = '0;
                     next_address                = start_address_aligned;
@@ -233,6 +247,7 @@ pub module line_writer::<AddressBits: u32, MaxWidth: u32, BurstPixels: u32, MaxB
                         && (command.do_fill || i_data.valid || (realign_buffer_valid != '0)) {
                         aw_addr  = next_address;
                         aw_valid = '1;
+                        all_bursts_issued = address_words_remaining <= (WRITE_BURST_WORDS as WORDS_BITS);
                         if address_words_remaining <: (WRITE_BURST_WORDS as WORDS_BITS) {
                             aw_len                      = (address_words_remaining - 1) as 8;
                             issued_data_words_remaining = address_words_remaining;
@@ -252,7 +267,7 @@ pub module line_writer::<AddressBits: u32, MaxWidth: u32, BurstPixels: u32, MaxB
                     // Output a bus word from the realignment buffer
                     if (!w_valid || axi.wready)
                         && (!realign_empty
-                            || ((address_words_remaining == '0) && (issued_data_words_remaining == '0)
+                            || (all_bursts_issued && (issued_data_words_remaining == '0)
                                 && (data_words_remaining == 1) && is_last_partial_q && realign_partial_data))
                         && (data_words_remaining >: '0) {
                         w_data               = word_from_buffer;

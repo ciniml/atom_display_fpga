@@ -51,10 +51,29 @@ pub module video_signal_generator::<MaxMultiplierH: u32, MaxMultiplierV: u32> #(
         s_front,
     }
 
+    // The active and pending configs are kept as "value - 1" (every field
+    // is only ever compared against a counter's last value), so the
+    // decrements stay out of the counter compare -> next_frame -> config
+    // update path.
     var next_video_config: video_pkg::VideoConfig                                                ;
     var video_config     : video_pkg::VideoConfig                                                ;
     var next_mult_config : video_pkg::VideoMultiplicationConfig::<MaxMultiplierH, MaxMultiplierV>;
     var mult_config      : video_pkg::VideoMultiplicationConfig::<MaxMultiplierH, MaxMultiplierV>;
+
+    function config_minus_one (
+        cfg: input video_pkg::VideoConfig,
+    ) -> video_pkg::VideoConfig {
+        var r              : video_pkg::VideoConfig;
+        r.back_porch_v  = cfg.back_porch_v - 1;
+        r.pixels_v      = cfg.pixels_v - 1;
+        r.front_porch_v = cfg.front_porch_v - 1;
+        r.pulse_width_v = cfg.pulse_width_v - 1;
+        r.back_porch_h  = cfg.back_porch_h - 1;
+        r.pixels_h      = cfg.pixels_h - 1;
+        r.front_porch_h = cfg.front_porch_h - 1;
+        r.pulse_width_h = cfg.pulse_width_h - 1;
+        return r;
+    }
 
     var state_h: TState;
     var state_v: TState;
@@ -71,7 +90,7 @@ pub module video_signal_generator::<MaxMultiplierH: u32, MaxMultiplierV: u32> #(
     var pixel_from_buffer: logic<video_pkg::PIXEL_BITS>            ;
 
     let next_active_counter_h: logic<ACTIVE_H_BITS> = if active_counter_h
-        == ((video_config.pixels_h - 1) as ACTIVE_H_BITS) ?
+        == (video_config.pixels_h as ACTIVE_H_BITS) ?
         '0
     :
         active_counter_h + 1
@@ -96,9 +115,9 @@ pub module video_signal_generator::<MaxMultiplierH: u32, MaxMultiplierV: u32> #(
     let pixel_mux: logic<video_pkg::PIXEL_BITS> = if i_data_valid && data_in_sync ? i_data.pixel_data : '0;
 
     let advance_v : logic = (state_h == TState::s_front)
-        && (inactive_counter_h == ((video_config.front_porch_h - 1) as INACTIVE_H_BITS));
+        && (inactive_counter_h == (video_config.front_porch_h as INACTIVE_H_BITS));
     let next_frame: logic = (state_v == TState::s_front) && advance_v
-        && (inactive_counter_v == ((video_config.front_porch_v - 1) as INACTIVE_V_BITS));
+        && (inactive_counter_v == (video_config.front_porch_v as INACTIVE_V_BITS));
 
     var data_enable_reg: logic;
     var h_sync         : logic;
@@ -109,29 +128,29 @@ pub module video_signal_generator::<MaxMultiplierH: u32, MaxMultiplierV: u32> #(
     always_ff {
         if_reset {
             next_video_config             = video_pkg::config_value(
-                DefaultBackPorchV,
-                DefaultPixelsV,
-                DefaultFrontPorchV,
-                DefaultPulseWidthV,
-                DefaultBackPorchH,
-                DefaultPixelsH,
-                DefaultFrontPorchH,
-                DefaultPulseWidthH,
+                DefaultBackPorchV - 1,
+                DefaultPixelsV - 1,
+                DefaultFrontPorchV - 1,
+                DefaultPulseWidthV - 1,
+                DefaultBackPorchH - 1,
+                DefaultPixelsH - 1,
+                DefaultFrontPorchH - 1,
+                DefaultPulseWidthH - 1,
             );
             video_config                  = video_pkg::config_value(
-                DefaultBackPorchV,
-                DefaultPixelsV,
-                DefaultFrontPorchV,
-                DefaultPulseWidthV,
-                DefaultBackPorchH,
-                DefaultPixelsH,
-                DefaultFrontPorchH,
-                DefaultPulseWidthH,
+                DefaultBackPorchV - 1,
+                DefaultPixelsV - 1,
+                DefaultFrontPorchV - 1,
+                DefaultPulseWidthV - 1,
+                DefaultBackPorchH - 1,
+                DefaultPixelsH - 1,
+                DefaultFrontPorchH - 1,
+                DefaultPulseWidthH - 1,
             );
-            next_mult_config.multiplier_h = 1;
-            next_mult_config.multiplier_v = 1;
-            mult_config.multiplier_h      = 1;
-            mult_config.multiplier_v      = 1;
+            next_mult_config.multiplier_h = 0;
+            next_mult_config.multiplier_v = 0;
+            mult_config.multiplier_h      = 0;
+            mult_config.multiplier_v      = 0;
             state_h                       = TState::s_sync;
             state_v                       = TState::s_sync;
             active_counter_h              = '0;
@@ -152,7 +171,7 @@ pub module video_signal_generator::<MaxMultiplierH: u32, MaxMultiplierV: u32> #(
             case state_h {
                 TState::s_sync: {
                     inactive_counter_h += 1;
-                    if inactive_counter_h == ((video_config.pulse_width_h - 1) as INACTIVE_H_BITS) {
+                    if inactive_counter_h == (video_config.pulse_width_h as INACTIVE_H_BITS) {
                         state_h            = TState::s_back;
                         inactive_counter_h = '0;
                     }
@@ -160,21 +179,21 @@ pub module video_signal_generator::<MaxMultiplierH: u32, MaxMultiplierV: u32> #(
                 }
                 TState::s_back: {
                     inactive_counter_h += 1;
-                    if inactive_counter_h == ((video_config.back_porch_h - 1) as INACTIVE_H_BITS) {
+                    if inactive_counter_h == (video_config.back_porch_h as INACTIVE_H_BITS) {
                         state_h            = TState::s_active;
                         inactive_counter_h = '0;
                     }
                 }
                 TState::s_active: {
                     active_counter_h += 1;
-                    if active_counter_h == ((video_config.pixels_h - 1) as ACTIVE_H_BITS) {
+                    if active_counter_h == (video_config.pixels_h as ACTIVE_H_BITS) {
                         state_h          = TState::s_front;
                         active_counter_h = '0;
                     }
                     if state_v == TState::s_active {
                         if multiplier_v == '0 {
                             multiplier_h += 1;
-                            if multiplier_h == ((mult_config.multiplier_h - 1) as MULT_BITS) {
+                            if multiplier_h == (mult_config.multiplier_h as MULT_BITS) {
                                 multiplier_h = '0;
                             }
                             if multiplier_h == '0 {
@@ -189,7 +208,7 @@ pub module video_signal_generator::<MaxMultiplierH: u32, MaxMultiplierV: u32> #(
                 }
                 TState::s_front: {
                     inactive_counter_h += 1;
-                    if inactive_counter_h == ((video_config.front_porch_h - 1) as INACTIVE_H_BITS) {
+                    if inactive_counter_h == (video_config.front_porch_h as INACTIVE_H_BITS) {
                         state_h            = TState::s_sync;
                         inactive_counter_h = '0;
                     }
@@ -201,7 +220,7 @@ pub module video_signal_generator::<MaxMultiplierH: u32, MaxMultiplierV: u32> #(
                 TState::s_sync: {
                     if advance_v {
                         inactive_counter_v += 1;
-                        if inactive_counter_v == ((video_config.pulse_width_v - 1) as INACTIVE_V_BITS) {
+                        if inactive_counter_v == (video_config.pulse_width_v as INACTIVE_V_BITS) {
                             state_v            = TState::s_back;
                             inactive_counter_v = '0;
                         }
@@ -211,7 +230,7 @@ pub module video_signal_generator::<MaxMultiplierH: u32, MaxMultiplierV: u32> #(
                 TState::s_back: {
                     if advance_v {
                         inactive_counter_v += 1;
-                        if inactive_counter_v == ((video_config.back_porch_v - 1) as INACTIVE_V_BITS) {
+                        if inactive_counter_v == (video_config.back_porch_v as INACTIVE_V_BITS) {
                             state_v            = TState::s_active;
                             inactive_counter_v = '0;
                         }
@@ -220,12 +239,12 @@ pub module video_signal_generator::<MaxMultiplierH: u32, MaxMultiplierV: u32> #(
                 TState::s_active: {
                     if advance_v {
                         active_counter_v += 1;
-                        if active_counter_v == ((video_config.pixels_v - 1) as ACTIVE_V_BITS) {
+                        if active_counter_v == (video_config.pixels_v as ACTIVE_V_BITS) {
                             state_v          = TState::s_front;
                             active_counter_v = '0;
                         }
                         multiplier_v += 1;
-                        if multiplier_v == ((mult_config.multiplier_v - 1) as MULT_BITS) {
+                        if multiplier_v == (mult_config.multiplier_v as MULT_BITS) {
                             multiplier_v = '0;
                         }
                     }
@@ -233,7 +252,7 @@ pub module video_signal_generator::<MaxMultiplierH: u32, MaxMultiplierV: u32> #(
                 TState::s_front: {
                     if advance_v {
                         inactive_counter_v += 1;
-                        if inactive_counter_v == ((video_config.front_porch_v - 1) as INACTIVE_V_BITS) {
+                        if inactive_counter_v == (video_config.front_porch_v as INACTIVE_V_BITS) {
                             state_v            = TState::s_sync;
                             inactive_counter_v = '0;
                         }
@@ -249,10 +268,11 @@ pub module video_signal_generator::<MaxMultiplierH: u32, MaxMultiplierV: u32> #(
 
             // Config double buffering: update at frame boundaries
             if i_config_valid {
-                next_video_config = i_config;
+                next_video_config = config_minus_one(i_config);
             }
             if i_mult_config_valid {
-                next_mult_config = i_mult_config;
+                next_mult_config.multiplier_h = i_mult_config.multiplier_h - 1;
+                next_mult_config.multiplier_v = i_mult_config.multiplier_v - 1;
             }
             trigger_frame = '0;
             if next_frame {
